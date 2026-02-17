@@ -1,0 +1,66 @@
+node_modules/
+
+# Node logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next/
+out/
+.build/
+.next.cache/
+.next/**
+
+# Production
+/.turbo
+/.vercel
+/.vercel_build_output
+
+# Logs
+logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDEs
+.vscode/
+.idea/
+
+# Misc
+coverage/
+dist/
+.build/
+
+# Static generated
+public/.DS_Store
+
+# Build outputs
+.next/
+
+# Optional npm cache
+.npm
+
+# Mac
+.DS_Store
+
+# Secrets
+*.pem
+
+# Ignore compiled files
+*.tsbuildinfo
+
+# Ignore lockfiles if you prefer
+# package-lock.json
+# yarn.lock
+node_modules

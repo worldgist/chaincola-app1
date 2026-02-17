@@ -1,0 +1,56 @@
+{
+  "name": "chaincola-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "fix-native": "bash scripts/fix-native-bindings.sh",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "trigger-eth-detection": "node scripts/trigger-eth-deposit-detection.js",
+    "check-eth-balance": "node scripts/check-eth-blockchain-balance.js",
+    "check-update-sol-balance": "node scripts/check-and-update-sol-balance.js",
+    "test-buy-crypto": "node scripts/test-buy-crypto.js",
+    "correct-ngn-balance": "node scripts/correct-ngn-balance.js",
+    "test-sell-crypto": "node scripts/test-sell-crypto.js"
+  },
+  "dependencies": {
+    "@next/swc-darwin-x64": "^16.1.6",
+    "@noble/hashes": "^2.0.1",
+    "@noble/secp256k1": "^3.0.0",
+    "@solana/web3.js": "^1.98.4",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.89.0",
+    "bip32": "^4.0.0",
+    "bip39": "^3.1.0",
+    "bitcoinjs-lib": "^6.1.7",
+    "bs58": "^6.0.0",
+    "ecpair": "^2.1.0",
+    "ed25519-hd-key": "^1.3.0",
+    "ethers": "^6.16.0",
+    "next": "^16.1.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "ripple-address-codec": "^5.0.0",
+    "ripple-keypairs": "^2.0.0",
+    "tiny-secp256k1": "^2.2.4",
+    "tronweb": "^6.1.1",
+    "xrpl": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.2.3",
+    "eslint": "^9",
+    "eslint-config-next": "16.0.7",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "optionalDependencies": {
+    "lightningcss-darwin-x64": "^1.31.1",
+    "@tailwindcss/oxide-darwin-x64": "^4"
+  }
+}
