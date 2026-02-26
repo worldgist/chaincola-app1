@@ -20,6 +20,9 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getNgnBalance, formatBalance } from '@/lib/wallet-service';
 import { verifyBankAccount, submitWithdrawal, getBanks, Bank } from '@/lib/withdrawal-service';
 import { demoWithdraw } from '@/lib/demo-withdrawal-service';
+import { getAppSettingsData } from '@/lib/app-settings-service';
+import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
+import MinimumWithdrawLimitModal from '@/components/minimum-withdraw-limit-modal';
 
 export default function WithdrawScreen() {
   const { user } = useAuth();
@@ -40,12 +43,21 @@ export default function WithdrawScreen() {
   const [banksLoading, setBanksLoading] = useState(true);
   const [banksError, setBanksError] = useState<string | null>(null);
   const [bankSearchQuery, setBankSearchQuery] = useState('');
+  const [proceedLoading, setProceedLoading] = useState(false);
+  const [showInsufficientBalanceModal, setShowInsufficientBalanceModal] = useState(false);
+  const [showMinimumLimitModal, setShowMinimumLimitModal] = useState(false);
+  const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(1000);
 
-  // Fetch balance and banks on mount
+  // Fetch balance, banks, and app settings on mount
   useEffect(() => {
     if (user?.id) {
       fetchBalance();
       fetchBanks();
+      getAppSettingsData().then((settings) => {
+        if (settings?.min_withdrawal_amount != null && settings.min_withdrawal_amount > 0) {
+          setMinWithdrawalAmount(settings.min_withdrawal_amount);
+        }
+      });
     }
   }, [user?.id]);
 
@@ -145,13 +157,18 @@ export default function WithdrawScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountNumber, selectedBank, selectedBankCode]);
 
-  const handleProceed = () => {
+  const handleProceed = async () => {
     if (!amount || parseFloat(amount) <= 0) {
       Alert.alert('Error', 'Please enter a valid amount');
       return;
     }
-    if (parseFloat(amount) > availableBalance) {
-      Alert.alert('Error', 'Insufficient balance');
+    const amt = parseFloat(amount);
+    if (amt < minWithdrawalAmount) {
+      setShowMinimumLimitModal(true);
+      return;
+    }
+    if (amt > availableBalance) {
+      setShowInsufficientBalanceModal(true);
       return;
     }
     if (!accountNumber || accountNumber.length < 10) {
@@ -167,7 +184,10 @@ export default function WithdrawScreen() {
       return;
     }
 
+    setProceedLoading(true);
+    await new Promise((r) => setTimeout(r, 300));
     setShowConfirmModal(true);
+    setProceedLoading(false);
   };
 
   const handleConfirmWithdraw = async () => {
@@ -203,6 +223,19 @@ export default function WithdrawScreen() {
         return;
       }
       
+      if (withdrawalAmount < minWithdrawalAmount) {
+        setShowConfirmModal(false);
+        setShowMinimumLimitModal(true);
+        setSubmittingWithdrawal(false);
+        return;
+      }
+      if (withdrawalAmount > availableBalance) {
+        setShowConfirmModal(false);
+        setShowInsufficientBalanceModal(true);
+        setSubmittingWithdrawal(false);
+        return;
+      }
+      
       // Close confirmation modal
       setShowConfirmModal(false);
       
@@ -230,20 +263,35 @@ export default function WithdrawScreen() {
       } else {
         const errorMessage = result.error || 'Failed to process withdrawal. Please try again.';
         console.error('Withdrawal failed:', errorMessage);
-        Alert.alert(
-          'Withdrawal Failed',
-          errorMessage,
-          [{ text: 'OK', style: 'default' }]
-        );
+        const errLower = errorMessage.toLowerCase();
+        if (errLower.includes('insufficient')) {
+          await fetchBalance();
+          setShowInsufficientBalanceModal(true);
+        } else if (errLower.includes('minimum') || errLower.includes('below') || errLower.includes('limit')) {
+          setShowMinimumLimitModal(true);
+        } else {
+          Alert.alert(
+            'Withdrawal Failed',
+            errorMessage,
+            [{ text: 'OK', style: 'default' }]
+          );
+        }
       }
     } catch (error: any) {
       console.error('Error processing withdrawal:', error);
       const errorMessage = error.message || error.toString() || 'Failed to process withdrawal. Please try again.';
-      Alert.alert(
-        'Error',
-        errorMessage,
-        [{ text: 'OK', style: 'default' }]
-      );
+      const errLower = errorMessage.toLowerCase();
+      if (errLower.includes('insufficient')) {
+        fetchBalance().then(() => setShowInsufficientBalanceModal(true));
+      } else if (errLower.includes('minimum') || errLower.includes('below') || errLower.includes('limit')) {
+        setShowMinimumLimitModal(true);
+      } else {
+        Alert.alert(
+          'Error',
+          errorMessage,
+          [{ text: 'OK', style: 'default' }]
+        );
+      }
     } finally {
       setSubmittingWithdrawal(false);
     }
@@ -420,16 +468,16 @@ export default function WithdrawScreen() {
             <TouchableOpacity
               style={[
                 styles.proceedButton,
-                (!amount || !accountNumber || !selectedBank || !accountName) &&
+                (!amount || !accountNumber || !selectedBank || !accountName || proceedLoading) &&
                   styles.proceedButtonDisabled,
               ]}
               onPress={handleProceed}
-              disabled={!amount || !accountNumber || !selectedBank || !accountName}
-              activeOpacity={0.8}
+              disabled={!amount || !accountNumber || !selectedBank || !accountName || proceedLoading}
+              activeOpacity={proceedLoading ? 1 : 0.8}
             >
               <LinearGradient
                 colors={
-                  amount && accountNumber && selectedBank && accountName
+                  amount && accountNumber && selectedBank && accountName && !proceedLoading
                     ? ['#6B46C1', '#9333EA']
                     : ['#D1D5DB', '#9CA3AF']
                 }
@@ -437,15 +485,24 @@ export default function WithdrawScreen() {
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
               >
-                <MaterialIcons name="send" size={20} color="#FFFFFF" />
-                <ThemedText 
-                  style={styles.proceedButtonText}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.8}
-                >
-                  Proceed to Withdraw
-                </ThemedText>
+                {proceedLoading ? (
+                  <View style={styles.proceedLoadingContainer}>
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <ThemedText style={styles.proceedButtonText}>Proceeding...</ThemedText>
+                  </View>
+                ) : (
+                  <>
+                    <MaterialIcons name="send" size={20} color="#FFFFFF" />
+                    <ThemedText 
+                      style={styles.proceedButtonText}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
+                      Proceed to Withdraw
+                    </ThemedText>
+                  </>
+                )}
               </LinearGradient>
             </TouchableOpacity>
 
@@ -462,8 +519,13 @@ export default function WithdrawScreen() {
                   Alert.alert('Error', 'Please enter a valid amount');
                   return;
                 }
-                if (parseFloat(amount) > availableBalance) {
-                  Alert.alert('Error', 'Insufficient balance');
+                const amt = parseFloat(amount);
+                if (amt < minWithdrawalAmount) {
+                  setShowMinimumLimitModal(true);
+                  return;
+                }
+                if (amt > availableBalance) {
+                  setShowInsufficientBalanceModal(true);
                   return;
                 }
                 if (!accountNumber || accountNumber.length < 10) {
@@ -873,6 +935,23 @@ export default function WithdrawScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Insufficient Balance Modal */}
+      <InsufficientBalanceModal
+        visible={showInsufficientBalanceModal}
+        onClose={() => setShowInsufficientBalanceModal(false)}
+        availableBalance={availableBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        requiredAmount={amount}
+        currency="fiat"
+      />
+
+      {/* Minimum Withdraw Limit Modal */}
+      <MinimumWithdrawLimitModal
+        visible={showMinimumLimitModal}
+        onClose={() => setShowMinimumLimitModal(false)}
+        minimumAmount={minWithdrawalAmount}
+        enteredAmount={amount}
+      />
     </ThemedView>
   );
 }
@@ -1074,6 +1153,12 @@ const styles = StyleSheet.create({
   },
   proceedButtonGradient: {
     padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  proceedLoadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',

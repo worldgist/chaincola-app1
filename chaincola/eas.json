@@ -22,7 +22,6 @@
       }
     },
     "production": {
-      "autoIncrement": true,
       "ios": {
         "simulator": false
       },

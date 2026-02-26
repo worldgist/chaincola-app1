@@ -212,13 +212,20 @@ export default function BuyCryptoScreen() {
       return;
     }
 
+    const requiredNgn = parseFloat(ngnAmount);
+    if (requiredNgn > ngnBalance) {
+      setShowConfirmModal(false);
+      setShowInsufficientBalanceModal(true);
+      return;
+    }
+
     setShowConfirmModal(false);
     setExecuting(true);
 
     try {
       const result = await instantBuyCrypto({
         asset: selectedCrypto.symbol as 'BTC' | 'ETH' | 'USDT' | 'USDC' | 'XRP' | 'SOL',
-        ngn_amount: parseFloat(ngnAmount),
+        ngn_amount: requiredNgn,
       });
 
       if (result.success && result.crypto_amount !== undefined) {
@@ -234,10 +241,21 @@ export default function BuyCryptoScreen() {
         setShowSuccessModal(true);
         await fetchBalance();
       } else {
-        Alert.alert('Error', result.error || 'Failed to execute buy');
+        const err = result.error || 'Failed to execute buy';
+        if (err.toLowerCase().includes('insufficient')) {
+          await fetchBalance();
+          setShowInsufficientBalanceModal(true);
+        } else {
+          Alert.alert('Error', err);
+        }
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to execute buy');
+      const err = error.message || 'Failed to execute buy';
+      if (err.toLowerCase().includes('insufficient')) {
+        fetchBalance().then(() => setShowInsufficientBalanceModal(true));
+      } else {
+        Alert.alert('Error', err);
+      }
     } finally {
       setExecuting(false);
     }

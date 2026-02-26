@@ -181,7 +181,7 @@ export default function ContactUsScreen() {
             </View>
             <View style={styles.hoursItem}>
               <ThemedText style={styles.hoursDay}>Sunday</ThemedText>
-              <ThemedText style={styles.hoursTime}>Closed</ThemedText>
+              <ThemedText style={styles.hoursTime}>Always open</ThemedText>
             </View>
           </View>
           </>
