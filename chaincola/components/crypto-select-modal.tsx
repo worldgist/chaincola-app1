@@ -311,6 +311,13 @@ export default function CryptoSelectModal({
                     </View>
                     <View style={styles.cryptoRight}>
                       <ThemedText style={styles.cryptoBalance}>{asset.balance}</ThemedText>
+                      {asset.pricePerUnitNGN && asset.pricePerUnitNGN !== 'Loading...' && asset.pricePerUnitNGN !== 'N/A' ? (
+                        <ThemedText style={styles.cryptoPriceNgn} numberOfLines={1}>
+                          {asset.pricePerUnitNGN}/unit
+                        </ThemedText>
+                      ) : asset.pricePerUnitNGN === 'Loading...' ? (
+                        <ThemedText style={styles.cryptoPriceLoading}>…</ThemedText>
+                      ) : null}
                     </View>
                     <MaterialIcons
                       name="chevron-right"
@@ -446,6 +453,8 @@ const styles = StyleSheet.create({
   cryptoRight: {
     alignItems: 'flex-end',
     marginRight: 8,
+    maxWidth: '46%',
+    flexShrink: 1,
   },
   cryptoBalance: {
     fontSize: 16,

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, ActivityIndicator, Alert, Modal } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
@@ -16,6 +17,8 @@ export default function NotificationSettingsScreen() {
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [statusModalMessage, setStatusModalMessage] = useState('');
 
   const fetchPreferences = async () => {
     if (!user?.id) {
@@ -52,6 +55,12 @@ export default function NotificationSettingsScreen() {
     setSaving(true);
 
     try {
+      // If disabling push, remove token(s) so the user won't receive pushes on any device
+      if (value === false) {
+        const { unregisterPushNotifications } = await import('@/lib/push-notification-service');
+        await unregisterPushNotifications(user.id);
+      }
+
       const result = await updateUserNotificationPreferences(user.id, {
         push_notifications_enabled: value,
       });
@@ -60,7 +69,21 @@ export default function NotificationSettingsScreen() {
         // Revert on error
         setPushNotifications(!value);
         Alert.alert('Error', result.error || 'Failed to update push notification preference.');
+        return;
       }
+
+      // If enabling push, attempt to register (permission + token upsert)
+      if (value === true) {
+        const { registerForPushNotificationsAsync } = await import('@/lib/push-notification-service');
+        await registerForPushNotificationsAsync(user.id);
+      }
+
+      setStatusModalMessage(
+        value
+          ? 'You have enabled user push notifications.'
+          : 'You have disabled user push notifications.',
+      );
+      setShowStatusModal(true);
     } catch (error: any) {
       console.error('Error updating push notifications:', error);
       setPushNotifications(!value);
@@ -88,7 +111,15 @@ export default function NotificationSettingsScreen() {
         // Revert on error
         setEmailNotifications(!value);
         Alert.alert('Error', result.error || 'Failed to update email notification preference.');
+        return;
       }
+
+      setStatusModalMessage(
+        value
+          ? 'You have enabled user email notifications.'
+          : 'You have disabled user email notifications.',
+      );
+      setShowStatusModal(true);
     } catch (error: any) {
       console.error('Error updating email notifications:', error);
       setEmailNotifications(!value);
@@ -173,6 +204,34 @@ export default function NotificationSettingsScreen() {
           </View>
         )}
       </ScrollView>
+
+      {/* Status modal (shown after toggle updates) */}
+      <Modal
+        visible={showStatusModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowStatusModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalIcon}>
+              <MaterialIcons name="info" size={28} color="#6B46C1" />
+            </View>
+            <ThemedText style={styles.modalTitle}>Notification preference updated</ThemedText>
+            <ThemedText style={styles.modalMessage}>{statusModalMessage}</ThemedText>
+
+            <TouchableOpacity
+              style={styles.modalOkButton}
+              onPress={() => setShowStatusModal(false)}
+              activeOpacity={0.8}
+            >
+              <LinearGradient colors={['#6B46C1', '#9333EA']} style={styles.modalOkGradient}>
+                <ThemedText style={styles.modalOkText}>OK</ThemedText>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -273,6 +332,59 @@ const styles = StyleSheet.create({
   savingText: {
     fontSize: 14,
     opacity: 0.7,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  modalIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#EDE9FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  modalMessage: {
+    fontSize: 14,
+    opacity: 0.75,
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  modalOkButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalOkGradient: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 12,
+  },
+  modalOkText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
   },
 });
 

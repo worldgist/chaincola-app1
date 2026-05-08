@@ -170,29 +170,48 @@ serve(async (req) => {
       );
     }
 
-    // Get encryption key
-    const encryptionKey = Deno.env.get('XRP_ENCRYPTION_KEY') ||
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                         Deno.env.get('ETH_ENCRYPTION_KEY');
+    const possibleEncryptionKeys = [
+      Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('XRP_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
+    ].filter((k): k is string => !!k && k.length > 0);
 
-    if (!encryptionKey) {
+    if (possibleEncryptionKeys.length === 0) {
       console.error('❌ Encryption key not configured');
       return new Response(
-        JSON.stringify({ success: false, error: "Server configuration error" }),
+        JSON.stringify({ success: false, error: "Set CRYPTO_ENCRYPTION_KEY in Edge Function secrets." }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Decrypt private key
     console.log(`🔓 Decrypting private key...`);
-    let privateKeyHex: string;
+    let privateKeyHex: string | undefined;
     try {
-      privateKeyHex = await decryptPrivateKey(xrpWallet.private_key_encrypted, encryptionKey);
+      let decryptErr: Error | null = null;
+      for (const encryptionKey of possibleEncryptionKeys) {
+        try {
+          privateKeyHex = await decryptPrivateKey(xrpWallet.private_key_encrypted, encryptionKey);
+          decryptErr = null;
+          break;
+        } catch (e: unknown) {
+          decryptErr = e instanceof Error ? e : new Error(String(e));
+        }
+      }
+      if (!privateKeyHex) {
+        throw decryptErr || new Error('Failed to decrypt with any configured key');
+      }
       console.log(`✅ Private key decrypted (length: ${privateKeyHex.length} hex chars)`);
     } catch (decryptError: any) {
       console.error('❌ Failed to decrypt private key:', decryptError);
       return new Response(
         JSON.stringify({ success: false, error: "Failed to decrypt wallet keys" }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!privateKeyHex) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Decryption failed" }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

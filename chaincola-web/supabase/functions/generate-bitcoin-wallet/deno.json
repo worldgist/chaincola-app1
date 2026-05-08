@@ -4,8 +4,8 @@
     "strict": true
   },
   "imports": {
-    "std/": "https://deno.land/std@0.168.0/",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
-    "bitcoinjs-lib": "https://esm.sh/bitcoinjs-lib@6.1.5"
+    "bitcoinjs-lib": "npm:bitcoinjs-lib@6.1.5",
+    "ecpair": "npm:ecpair@2.0.1",
+    "tiny-secp256k1": "npm:tiny-secp256k1@1.1.6"
   }
 }

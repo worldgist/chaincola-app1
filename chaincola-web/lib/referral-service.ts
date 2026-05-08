@@ -2,7 +2,14 @@
 // Handles referral codes and relationships from the database
 import { createClient } from './supabase/client';
 
-const supabase = createClient();
+let supabaseClient: ReturnType<typeof createClient> | null = null;
+
+function getSupabase() {
+  if (!supabaseClient) {
+    supabaseClient = createClient();
+  }
+  return supabaseClient;
+}
 
 export interface ReferralCodeValidation {
   isValid: boolean;
@@ -23,7 +30,7 @@ export async function validateReferralCode(code: string): Promise<ReferralCodeVa
     }
 
     // Use the database function to validate
-    const { data, error } = await supabase.rpc('validate_referral_code', {
+    const { data, error } = await getSupabase().rpc('validate_referral_code', {
       p_code: code.trim().toUpperCase(),
     });
 
@@ -69,7 +76,7 @@ export async function createReferralRelationship(
 ): Promise<{ error: any }> {
   try {
     // Use the database function to create referral
-    const { error } = await supabase.rpc('create_referral', {
+    const { error } = await getSupabase().rpc('create_referral', {
       p_referrer_user_id: referrerUserId,
       p_referred_user_id: referredUserId,
       p_referral_code: referralCode.trim().toUpperCase(),
@@ -95,7 +102,7 @@ export async function createReferralRelationship(
  */
 export async function getUserReferralCode(userId: string): Promise<{ code: string | null; error: any }> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('user_profiles')
       .select('referral_code')
       .eq('user_id', userId)
@@ -129,7 +136,7 @@ export async function generateReferralCode(userId: string): Promise<{ code: stri
     }
 
     // Check if profile exists
-    const { data: profile } = await supabase
+    const { data: profile } = await getSupabase()
       .from('user_profiles')
       .select('id, user_id, referral_code')
       .eq('user_id', userId)
@@ -140,7 +147,7 @@ export async function generateReferralCode(userId: string): Promise<{ code: stri
     
     if (!profile) {
       // Try to create profile with referral code
-      const { data: newProfile, error: insertError } = await supabase
+      const { data: newProfile, error: insertError } = await getSupabase()
         .from('user_profiles')
         .insert({
           user_id: userId,
@@ -165,7 +172,7 @@ export async function generateReferralCode(userId: string): Promise<{ code: stri
 
     // Update existing profile
     if (!profile.referral_code) {
-      const { data: updatedProfile, error: updateError } = await supabase
+      const { data: updatedProfile, error: updateError } = await getSupabase()
         .from('user_profiles')
         .update({ referral_code: referralCodeValue })
         .eq('user_id', userId)
@@ -210,7 +217,7 @@ export async function getReferralStats(userId: string): Promise<{
   error?: any;
 }> {
   try {
-    const { data, error } = await supabase.rpc('get_referral_stats', {
+    const { data, error } = await getSupabase().rpc('get_referral_stats', {
       p_user_id: userId,
     });
 
@@ -252,7 +259,7 @@ export async function getRecentReferrals(
   limit: number = 10
 ): Promise<{ referrals: any[]; error: any }> {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('referrals')
       .select('*')
       .eq('referrer_user_id', userId)

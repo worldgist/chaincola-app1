@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   StyleSheet,
   View,
@@ -9,6 +9,7 @@ import {
   Modal,
   ActivityIndicator,
   RefreshControl,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,13 +19,16 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   createAccountDeletionRequest,
-  getUserDeletionRequest,
+  fetchUserDeletionRequest,
   cancelAccountDeletionRequest,
   formatTimeRemaining,
   formatDate,
+  getGracePeriodMeta,
+  ACCOUNT_DELETION_GRACE_PERIOD_DAYS,
   type AccountDeletion,
 } from '@/lib/account-deletion-service';
-import { createDemoDeletionRequest } from '@/lib/demo-deletion-service';
+import { getUserProfile, type UserProfile } from '@/lib/user-service';
+import { supabase } from '@/lib/supabase';
 
 export default function DeleteAccountScreen() {
   const { user, signOut } = useAuth();
@@ -37,8 +41,35 @@ export default function DeleteAccountScreen() {
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [timeRemaining, setTimeRemaining] = useState<string>('');
-  const [daysRemaining, setDaysRemaining] = useState<number>(0);
+  const [graceTick, setGraceTick] = useState(0);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [txCount, setTxCount] = useState<number | null>(null);
+  const [walletCount, setWalletCount] = useState<number | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const requiredText = 'DELETE';
+
+  const loadAccountSummary = useCallback(async () => {
+    if (!user?.id) return;
+    setSummaryLoading(true);
+    try {
+      const [profile, txRes, walletRes] = await Promise.all([
+        getUserProfile(user.id),
+        supabase.from('transactions').select('id', { count: 'exact', head: true }).eq('user_id', user.id),
+        supabase
+          .from('crypto_wallets')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+          .eq('is_active', true),
+      ]);
+      setUserProfile(profile);
+      setTxCount(typeof txRes.count === 'number' ? txRes.count : null);
+      setWalletCount(typeof walletRes.count === 'number' ? walletRes.count : null);
+    } catch (e) {
+      console.error('Failed to load account summary for delete screen:', e);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [user?.id]);
 
   const checkExistingRequest = async (isRefresh = false) => {
     if (!user?.id) {
@@ -55,23 +86,33 @@ export default function DeleteAccountScreen() {
     setError(null);
 
     try {
-      const request = await getUserDeletionRequest(user.id);
-      setDeletionRequest(request);
-      
-      // Update time remaining if request exists
-      if (request) {
-        updateTimeRemaining(request.scheduled_deletion_at);
+      const [{ request, error: fetchErr }] = await Promise.all([
+        fetchUserDeletionRequest(user.id),
+        loadAccountSummary(),
+      ]);
+
+      if (fetchErr) {
+        if (fetchErr.includes('permission') || fetchErr.includes('row-level')) {
+          setError('Permission error. Please ensure you are signed in and try again.');
+        } else {
+          setError(`Failed to load deletion status: ${fetchErr}`);
+        }
+        setDeletionRequest(null);
+        return;
       }
-    } catch (error: any) {
-      console.error('Error checking deletion request:', error);
-      
-      // Handle RLS policy errors specifically
-      if (error?.code === '42501' || error?.message?.includes('row-level security')) {
+
+      setDeletionRequest(request);
+      if (request) {
+        setTimeRemaining(formatTimeRemaining(request.scheduled_deletion_at));
+        setGraceTick((t) => t + 1);
+      }
+    } catch (err: unknown) {
+      console.error('Error checking deletion request:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('42501') || msg.includes('row-level security')) {
         setError('Permission error. Please ensure you are signed in and try again.');
-      } else if (error?.message) {
-        setError(`Failed to load deletion status: ${error.message}`);
       } else {
-        setError('Failed to load deletion status. Please pull to refresh.');
+        setError(`Failed to load deletion status: ${msg}`);
       }
     } finally {
       setCheckingRequest(false);
@@ -89,39 +130,23 @@ export default function DeleteAccountScreen() {
     }, [user?.id])
   );
 
-  // Update time remaining every minute if there's a pending deletion
+  const graceMeta = useMemo(() => {
+    if (!deletionRequest) return null;
+    return getGracePeriodMeta(deletionRequest);
+  }, [deletionRequest, graceTick]);
+
   useEffect(() => {
     if (!deletionRequest) return;
 
-    const updateTimer = () => {
-      updateTimeRemaining(deletionRequest.scheduled_deletion_at);
+    const tick = () => {
+      setTimeRemaining(formatTimeRemaining(deletionRequest.scheduled_deletion_at));
+      setGraceTick((x) => x + 1);
     };
 
-    // Update immediately
-    updateTimer();
-
-    // Update every minute
-    const interval = setInterval(updateTimer, 60000);
-
+    tick();
+    const interval = setInterval(tick, 60_000);
     return () => clearInterval(interval);
   }, [deletionRequest]);
-
-  const updateTimeRemaining = (scheduledDeletionAt: string) => {
-    const remaining = formatTimeRemaining(scheduledDeletionAt);
-    setTimeRemaining(remaining);
-
-    // Calculate days remaining for progress indicator
-    try {
-      const now = new Date();
-      const deletionDate = new Date(scheduledDeletionAt);
-      const diffInMs = deletionDate.getTime() - now.getTime();
-      const diffInDays = Math.ceil(diffInMs / (1000 * 60 * 60 * 24));
-      setDaysRemaining(Math.max(0, diffInDays));
-    } catch (error) {
-      console.error('Error calculating days remaining:', error);
-      setDaysRemaining(0);
-    }
-  };
 
   const handleDelete = () => {
     if (confirmText !== requiredText) {
@@ -147,10 +172,11 @@ export default function DeleteAccountScreen() {
         setConfirmText('');
         setReason('');
         setError(null);
-        updateTimeRemaining(result.data.scheduled_deletion_at);
+        setTimeRemaining(formatTimeRemaining(result.data.scheduled_deletion_at));
+        setGraceTick((x) => x + 1);
         Alert.alert(
           'Deletion Request Submitted',
-          'Your account deletion request has been submitted. You have 30 days to cancel this request. After 30 days, your account will be permanently deleted.',
+          `Your account deletion request has been submitted. You have ${ACCOUNT_DELETION_GRACE_PERIOD_DAYS} days to cancel this request. After that, your account will be permanently deleted.`,
           [
             {
               text: 'OK',
@@ -258,7 +284,7 @@ export default function DeleteAccountScreen() {
               <ThemedText style={styles.retryButtonText}>Retry</ThemedText>
             </TouchableOpacity>
           </View>
-        ) : deletionRequest ? (
+        ) : deletionRequest && graceMeta ? (
           <View style={styles.pendingDeletionContainer}>
             <View style={styles.pendingIconContainer}>
               <MaterialIcons name="schedule" size={48} color="#F59E0B" />
@@ -271,41 +297,46 @@ export default function DeleteAccountScreen() {
               {formatDate(deletionRequest.scheduled_deletion_at)}
             </ThemedText>
             
-            {/* Progress Bar */}
+            {/* Progress from real requested_at → scheduled_deletion_at */}
             <View style={styles.progressContainer}>
               <View style={styles.progressBar}>
-                <View 
-                  style={[
-                    styles.progressFill, 
-                    { width: `${Math.max(0, Math.min(100, ((30 - daysRemaining) / 30) * 100))}%` }
-                  ]} 
+                <View
+                  style={[styles.progressFill, { width: `${graceMeta.progressPercent}%` }]}
                 />
               </View>
               <View style={styles.progressLabels}>
                 <ThemedText style={styles.progressLabel}>
-                  {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'} remaining
+                  {graceMeta.remainingDays}{' '}
+                  {graceMeta.remainingDays === 1 ? 'day' : 'days'} remaining
                 </ThemedText>
                 <ThemedText style={styles.progressLabel}>
-                  {30 - daysRemaining} of 30 days elapsed
+                  {Math.min(
+                    graceMeta.totalDays,
+                    Math.max(0, graceMeta.totalDays - graceMeta.remainingDays),
+                  )}{' '}
+                  of {graceMeta.totalDays} days elapsed
                 </ThemedText>
               </View>
             </View>
             
-            <ThemedText style={[
-              styles.timeRemaining,
-              daysRemaining <= 7 && styles.timeRemainingUrgent
-            ]}>
+            <ThemedText
+              style={[
+                styles.timeRemaining,
+                graceMeta.remainingDays <= 7 && styles.timeRemainingUrgent,
+              ]}
+            >
               {timeRemaining || formatTimeRemaining(deletionRequest.scheduled_deletion_at)}
             </ThemedText>
-            
-            {daysRemaining <= 7 && daysRemaining > 0 && (
+
+            {graceMeta.remainingDays <= 7 && graceMeta.remainingDays > 0 && (
               <View style={styles.urgentWarning}>
                 <MaterialIcons name="warning" size={20} color="#DC2626" />
                 <ThemedText style={styles.urgentWarningText}>
-                  {daysRemaining === 1 
+                  {graceMeta.remainingDays === 1
                     ? 'Your account will be deleted tomorrow!'
-                    : `Only ${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left to cancel.`
-                  }
+                    : `Only ${graceMeta.remainingDays} ${
+                        graceMeta.remainingDays === 1 ? 'day' : 'days'
+                      } left to cancel.`}
                 </ThemedText>
               </View>
             )}
@@ -349,6 +380,39 @@ export default function DeleteAccountScreen() {
           </View>
         ) : (
           <>
+            <View style={styles.accountCard}>
+              <ThemedText style={styles.accountCardTitle}>Your account</ThemedText>
+              {summaryLoading ? (
+                <ActivityIndicator size="small" color="#6B46C1" style={{ marginVertical: 8 }} />
+              ) : null}
+              <View style={styles.accountRow}>
+                <ThemedText style={styles.accountLabel}>Name</ThemedText>
+                <ThemedText style={styles.accountValue}>
+                  {userProfile?.full_name ||
+                    userProfile?.name ||
+                    (user?.metadata?.full_name as string) ||
+                    (user?.metadata?.name as string) ||
+                    '—'}
+                </ThemedText>
+              </View>
+              <View style={styles.accountRow}>
+                <ThemedText style={styles.accountLabel}>Email</ThemedText>
+                <ThemedText style={styles.accountValue}>{userProfile?.email || user?.email || '—'}</ThemedText>
+              </View>
+              <ThemedText style={styles.accountRowMuted} numberOfLines={1}>
+                ID {user?.id ?? '—'}
+              </ThemedText>
+              <View style={styles.accountStatsRow}>
+                <ThemedText style={styles.accountStat}>
+                  Transactions:{' '}
+                  {txCount === null ? '—' : String(txCount)}
+                </ThemedText>
+                <ThemedText style={styles.accountStat}>
+                  Active wallets:{' '}
+                  {walletCount === null ? '—' : String(walletCount)}
+                </ThemedText>
+              </View>
+            </View>
 
         <View style={styles.warningContainer}>
           <View style={styles.warningIconContainer}>
@@ -463,7 +527,12 @@ export default function DeleteAccountScreen() {
             </View>
             <ThemedText style={styles.modalTitle}>Final Confirmation</ThemedText>
             <ThemedText style={styles.modalMessage}>
-              Are you absolutely sure you want to delete your account? This action is permanent and cannot be reversed.
+              Delete account for{' '}
+              <ThemedText style={{ fontWeight: '700' }}>
+                {userProfile?.email || user?.email || 'this account'}
+              </ThemedText>
+              ? After the {ACCOUNT_DELETION_GRACE_PERIOD_DAYS}-day period, access and data linked to this account
+              will be removed as described below. This cannot be reversed.
             </ThemedText>
             <View style={styles.modalActions}>
               <TouchableOpacity
@@ -508,6 +577,62 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingTop: 60,
     paddingBottom: 40,
+  },
+  accountCard: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    width: '100%',
+  },
+  accountCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 10,
+    color: '#11181C',
+  },
+  accountRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    marginBottom: 6,
+    gap: 8,
+  },
+  accountLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6B7280',
+    width: 72,
+  },
+  accountValue: {
+    flex: 1,
+    fontSize: 14,
+    color: '#11181C',
+    minWidth: 0,
+  },
+  accountRowMuted: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    marginTop: 4,
+    marginBottom: 10,
+    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: undefined }),
+  },
+  accountStatsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 4,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  accountStat: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: '500',
   },
   header: {
     flexDirection: 'row',

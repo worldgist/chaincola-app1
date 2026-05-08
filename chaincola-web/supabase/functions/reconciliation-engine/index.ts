@@ -137,6 +137,33 @@ serve(async (req) => {
         );
       }
 
+      case 'autoReconcile': {
+        const tolerancePercentage =
+          typeof body.tolerance_percentage === 'number'
+            ? body.tolerance_percentage
+            : 0.01;
+        const assets = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'];
+        const effectiveUserId =
+          userId ?? '00000000-0000-0000-0000-000000000000';
+        const results: any[] = [];
+
+        for (const assetToReconcile of assets) {
+          const row = await autoReconcileAsset(
+            assetToReconcile,
+            supabase,
+            effectiveUserId,
+            tolerancePercentage,
+            true
+          );
+          results.push(row);
+        }
+
+        return new Response(
+          JSON.stringify({ success: true, data: results }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
       default:
         return new Response(
           JSON.stringify({ success: false, error: 'Invalid action' }),

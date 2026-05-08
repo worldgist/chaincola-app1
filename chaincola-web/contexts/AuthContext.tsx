@@ -242,7 +242,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Sign up with Supabase
+      const emailRedirectTo =
+        typeof window !== 'undefined' ? `${window.location.origin}/auth/signin` : undefined;
+
+      // Sign up with Supabase (emailRedirectTo must match Dashboard → Auth → URL allow list)
       const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
         password: password,
@@ -251,7 +254,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             full_name: metadata?.fullName || '',
             phone_number: metadata?.phoneNumber || '',
           },
-          emailRedirectTo: undefined, // We'll handle email verification in-app
+          ...(emailRedirectTo ? { emailRedirectTo } : {}),
         },
       });
 
@@ -351,15 +354,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resendVerificationEmail = async (email: string, type: 'signup' | 'recovery' = 'signup') => {
     try {
+      const emailRedirectTo =
+        typeof window !== 'undefined' ? `${window.location.origin}/auth/signin` : undefined;
       const { error } = await supabase.auth.resend({
         type: type === 'recovery' ? 'recovery' : 'signup',
         email: email.trim(),
+        ...(emailRedirectTo
+          ? { options: { emailRedirectTo } }
+          : {}),
       });
-      
+
       if (error) {
         return { error };
       }
-      
+
       return { error: null };
     } catch (error: any) {
       return { error };

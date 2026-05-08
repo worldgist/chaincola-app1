@@ -1,22 +1,26 @@
-// Shared helper function to send push notifications for wallet funding
-// This can be imported and used by all wallet funding functions
+// Shared helper: mobile push via Expo after successful wallet funding (email receipts use Resend through send-email).
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { NOTIFICATION_ICON } from "./notification-config.ts";
+import { CHAINCOLA_LOGO_URL, NOTIFICATION_ICON } from "./notification-config.ts";
 
-const EXPO_PUSH_API_URL = 'https://exp.host/--/api/v2/push/send';
+const EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send";
+/** Android notification accent (matches other ChainCola pushes) */
+const ANDROID_NOTIFICATION_COLOR = "#6B46C1";
 
 interface SendWalletFundingNotificationParams {
   supabase: any;
   userId: string;
+  /** Net amount credited to the user's wallet */
   amount: number;
   currency: string;
   feeAmount?: number;
+  /** Gross deposit before fee — improves copy when a fee was deducted */
+  depositAmount?: number;
   transactionId?: string;
 }
 
 /**
- * Sends a push notification for successful wallet funding
+ * Sends a push notification after a successful wallet funding payment.
+ * `amount` must be the net credited balance (not the pre-fee deposit).
  */
 export async function sendWalletFundingNotification({
   supabase,
@@ -24,30 +28,28 @@ export async function sendWalletFundingNotification({
   amount,
   currency,
   feeAmount = 0,
+  depositAmount,
   transactionId,
 }: SendWalletFundingNotificationParams): Promise<void> {
   try {
-    // Check user notification preferences
     const { data: preferences } = await supabase
-      .from('user_notification_preferences')
-      .select('push_notifications_enabled')
-      .eq('user_id', userId)
+      .from("user_notification_preferences")
+      .select("push_notifications_enabled")
+      .eq("user_id", userId)
       .maybeSingle();
 
-    // If preferences exist and push is disabled, skip
     if (preferences && preferences.push_notifications_enabled === false) {
       console.log(`⏭️ Push notifications disabled for user ${userId}`);
       return;
     }
 
-    // Get push tokens for user
     const { data: tokens, error: tokensError } = await supabase
-      .from('push_notification_tokens')
-      .select('token')
-      .eq('user_id', userId);
+      .from("push_notification_tokens")
+      .select("token, platform")
+      .eq("user_id", userId);
 
     if (tokensError) {
-      console.error('❌ Error fetching push tokens:', tokensError);
+      console.error("❌ Error fetching push tokens:", tokensError);
       return;
     }
 
@@ -56,98 +58,91 @@ export async function sendWalletFundingNotification({
       return;
     }
 
-    // Format amount based on currency
     const formatAmount = (amt: number, curr: string): string => {
-      if (curr === 'NGN') {
-        return `₦${amt.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      if (curr === "NGN") {
+        return `₦${amt.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       }
-      return `${amt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${curr}`;
+      return `${amt.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${curr}`;
     };
 
-    // Create notification title and body
-    const title = `💰 Wallet Funded Successfully`;
-    let body = `Your wallet has been credited with ${formatAmount(amount, currency)}`;
-    
+    const creditStr = formatAmount(amount, currency);
+    const title = "Payment successful";
+
+    let body: string;
     if (feeAmount > 0) {
-      body += ` (Fee: ${formatAmount(feeAmount, currency)})`;
+      const feeStr = formatAmount(feeAmount, currency);
+      if (depositAmount != null && depositAmount > amount + 0.0001) {
+        const paidStr = formatAmount(depositAmount, currency);
+        body = `${creditStr} was added to your wallet. Your ${paidStr} payment included a ${feeStr} fee.`;
+      } else {
+        body = `${creditStr} was added to your wallet after a ${feeStr} processing fee.`;
+      }
+    } else {
+      body = `${creditStr} was added to your ChainCola wallet.`;
     }
 
-    // Prepare push notification messages
-    const messages = tokens.map(({ token }) => ({
-      to: token,
-      sound: 'default',
-      title: title,
-      body: body,
-      data: {
-        type: 'wallet_funding',
-        amount: amount,
-        currency: currency,
-        fee_amount: feeAmount,
-        transaction_id: transactionId,
-      },
-      priority: 'high' as const,
-      icon: NOTIFICATION_ICON,
-    }));
-
-    // Send push notifications via Expo API
-    console.log(`📤 Sending ${messages.length} push notification(s) for wallet funding to user ${userId}`);
-
-    try {
-      const response = await fetch(EXPO_PUSH_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
+    const messages = tokens.map(({ token, platform }: { token: string; platform?: string | null }) => {
+      const msg: Record<string, unknown> = {
+        to: token,
+        sound: "default",
+        title,
+        body,
+        data: {
+          type: "wallet_funding",
+          amount,
+          currency,
+          fee_amount: feeAmount,
+          deposit_amount: depositAmount ?? null,
+          transaction_id: transactionId,
         },
-        body: JSON.stringify(messages),
-      });
+        priority: "high",
+        icon: NOTIFICATION_ICON,
+      };
+      if (CHAINCOLA_LOGO_URL) {
+        msg.image = CHAINCOLA_LOGO_URL;
+      }
+      if (platform === "android") {
+        msg.color = ANDROID_NOTIFICATION_COLOR;
+      }
+      return msg;
+    });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Expo Push API error:', response.status, errorText);
-        return;
-      }
+    console.log(`📤 Sending ${messages.length} wallet funding push(es) to user ${userId}`);
 
-      const result = await response.json();
-      
-      if (!result || !result.data) {
-        console.error('❌ Invalid response from Expo Push API:', result);
-        return;
-      }
+    const response = await fetch(EXPO_PUSH_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "Accept-Encoding": "gzip, deflate",
+      },
+      body: JSON.stringify(messages),
+    });
 
-      const errors = result.data.filter((item: any) => item.status === 'error') || [];
-      const success = result.data.filter((item: any) => item.status === 'ok') || [];
-      
-      if (errors.length > 0) {
-        console.warn(`⚠️ ${errors.length} push notification(s) failed:`, errors);
-        errors.forEach((err: any) => {
-          console.warn(`   - Token: ${err.expoPushToken?.substring(0, 20)}... Error: ${err.message || 'Unknown error'}`);
-        });
-      }
-      
-      if (success.length > 0) {
-        console.log(`✅ ${success.length} push notification(s) sent successfully`);
-      } else if (errors.length === 0) {
-        console.log('✅ Push notifications sent successfully');
-      }
-    } catch (fetchError: any) {
-      console.error('❌ Network error sending push notifications:', fetchError.message);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("❌ Expo Push API error:", response.status, errorText);
+      return;
     }
-  } catch (error: any) {
-    console.error('❌ Exception sending wallet funding notification:', error);
-    // Don't throw - we don't want notification failures to break wallet funding processing
+
+    const result = await response.json();
+
+    if (!result || !result.data) {
+      console.error("❌ Invalid response from Expo Push API:", result);
+      return;
+    }
+
+    const errors = result.data.filter((item: { status?: string }) => item.status === "error") || [];
+    const success = result.data.filter((item: { status?: string }) => item.status === "ok") || [];
+
+    if (errors.length > 0) {
+      console.warn(`⚠️ ${errors.length} push(es) failed:`, errors);
+    }
+    if (success.length > 0) {
+      console.log(`✅ ${success.length} wallet funding push(es) delivered`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("❌ Exception sending wallet funding notification:", message);
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-

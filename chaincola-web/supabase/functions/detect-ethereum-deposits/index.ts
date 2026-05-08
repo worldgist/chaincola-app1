@@ -16,6 +16,27 @@ const MIN_CONFIRMATIONS = 12;
 // Fallback price for ETH in NGN
 const FALLBACK_ETH_PRICE_NGN = 3500000; // ~$2,100 * 1650
 
+function parseEthTransfer(transfer: any): { amountEth: number; amountWei: bigint } {
+  // Alchemy asset transfers for native ETH can return:
+  // - transfer.value: human ETH decimal (string/number)
+  // - transfer.rawContract.value: wei as hex string or decimal string
+  const raw = transfer?.rawContract?.value;
+  try {
+    if (typeof raw === 'string' && raw.length > 0) {
+      const wei = raw.startsWith('0x') ? BigInt(raw) : BigInt(raw);
+      const eth = Number(wei) / 1e18;
+      return { amountEth: eth, amountWei: wei };
+    }
+  } catch {
+    // fall through
+  }
+
+  const eth = Number(transfer?.value || 0);
+  if (!Number.isFinite(eth) || eth <= 0) return { amountEth: 0, amountWei: 0n };
+  const wei = BigInt(Math.round(eth * 1e18));
+  return { amountEth: eth, amountWei: wei };
+}
+
 /**
  * Get current ETH price in NGN
  */
@@ -58,8 +79,18 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get Alchemy Ethereum API URL
-    const alchemyUrl = Deno.env.get('ALCHEMY_ETHEREUM_URL') || 'https://eth-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
+    // Get Alchemy Ethereum API URL (prefer full URL secret; fallback to API key secret)
+    const alchemyUrl =
+      Deno.env.get('ALCHEMY_ETHEREUM_URL') ||
+      (Deno.env.get('ALCHEMY_API_KEY')
+        ? `https://eth-mainnet.g.alchemy.com/v2/${Deno.env.get('ALCHEMY_API_KEY')}`
+        : '');
+    if (!alchemyUrl) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Missing ALCHEMY_ETHEREUM_URL or ALCHEMY_API_KEY secret' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
     // Get all active Ethereum wallet addresses
     const { data: wallets, error: walletsError } = await supabase
@@ -138,8 +169,7 @@ serve(async (req) => {
           if (transfer.asset !== 'ETH' || transfer.category !== 'external') continue;
 
           const txHash = transfer.hash;
-          const amountWei = BigInt(transfer.value || '0');
-          const amountEth = Number(amountWei) / 1e18;
+          const { amountEth, amountWei } = parseEthTransfer(transfer);
           const blockNumber = parseInt(transfer.blockNum || '0', 16);
           const confirmations = latestBlockNumber - blockNumber;
 
@@ -151,6 +181,7 @@ serve(async (req) => {
             .select('id, status, confirmations, metadata')
             .eq('transaction_hash', txHash.toLowerCase())
             .eq('user_id', wallet.user_id)
+            .eq('crypto_currency', 'ETH')
             .maybeSingle();
 
           let status: 'PENDING' | 'CONFIRMING' | 'CONFIRMED' = 'PENDING';
@@ -186,6 +217,7 @@ serve(async (req) => {
                   value_wei: amountWei.toString(),
                   price_per_eth_ngn: ethPriceNgn,
                   price_source: 'app_rate',
+                  credited: false,
                 },
               })
               .select()
@@ -199,6 +231,32 @@ serve(async (req) => {
 
             results.depositsFound++;
             console.log(`✅ New ETH deposit detected: ${amountEth} ETH (${confirmations} confirmations)`);
+
+            // Auto-credit when confirmed (idempotent)
+            if (status === 'CONFIRMED') {
+              const meta = insertedTx?.metadata || {};
+              if (meta.credited !== true) {
+                const { error: creditError } = await supabase.rpc('credit_crypto_wallet', {
+                  p_user_id: wallet.user_id,
+                  p_amount: amountEth,
+                  p_currency: 'ETH',
+                });
+                if (creditError) {
+                  console.error('❌ Error crediting ETH wallet:', creditError);
+                  results.errors.push(`Credit ETH failed for ${txHash}`);
+                } else {
+                  const updatedMeta = {
+                    ...meta,
+                    credited: true,
+                    credited_at: new Date().toISOString(),
+                    credited_amount: amountEth,
+                    credited_currency: 'ETH',
+                  };
+                  await supabase.from('transactions').update({ metadata: updatedMeta }).eq('id', insertedTx.id);
+                  console.log(`✅ Credited ETH wallet for ${wallet.user_id} (${amountEth} ETH)`);
+                }
+              }
+            }
 
             // Send notification
             await sendCryptoDepositNotification({
@@ -223,11 +281,36 @@ serve(async (req) => {
                 block_number: blockNumber,
               };
 
-
               await supabase
                 .from('transactions')
                 .update(updateData)
                 .eq('id', existingTx.id);
+            }
+
+            // Auto-credit when it flips to CONFIRMED (idempotent)
+            if (status === 'CONFIRMED') {
+              const meta = existingTx.metadata || {};
+              if (meta.credited !== true) {
+                const { error: creditError } = await supabase.rpc('credit_crypto_wallet', {
+                  p_user_id: wallet.user_id,
+                  p_amount: amountEth,
+                  p_currency: 'ETH',
+                });
+                if (creditError) {
+                  console.error('❌ Error crediting ETH wallet:', creditError);
+                  results.errors.push(`Credit ETH failed for ${txHash}`);
+                } else {
+                  const updatedMeta = {
+                    ...meta,
+                    credited: true,
+                    credited_at: new Date().toISOString(),
+                    credited_amount: amountEth,
+                    credited_currency: 'ETH',
+                  };
+                  await supabase.from('transactions').update({ metadata: updatedMeta }).eq('id', existingTx.id);
+                  console.log(`✅ Credited ETH wallet for ${wallet.user_id} (${amountEth} ETH)`);
+                }
+              }
             }
           }
         }

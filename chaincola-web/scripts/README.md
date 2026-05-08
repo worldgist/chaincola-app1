@@ -137,3 +137,9 @@ node scripts/script-name.js
 - Always review scripts before running them in production
 - Some scripts modify database records - use with caution
 - Scripts are organized by functionality but may overlap in purpose
+
+### Supabase project (`woyvzsysasgvpigaflul`)
+
+The Next.js app reads `NEXT_PUBLIC_*` from `.env.local`, then falls back to `constants/supabase.json` (same anon URL as the Expo app).
+
+**pg_cron / `net.http_post` jobs:** migration `20260504120000_pg_cron_vault_edge_auth.sql` recreates scheduled jobs so `Authorization` comes from **Vault**, not a committed JWT. In the Supabase SQL editor, store the current project’s **service_role** key once: `SELECT vault.create_secret('<paste from Settings → API>', 'supabase_service_role_jwt');` (re-run with a new value if you rotate the key). Without that secret name, cron calls return 401 until the secret exists.

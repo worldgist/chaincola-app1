@@ -46,7 +46,7 @@ export default function WithdrawScreen() {
   const [proceedLoading, setProceedLoading] = useState(false);
   const [showInsufficientBalanceModal, setShowInsufficientBalanceModal] = useState(false);
   const [showMinimumLimitModal, setShowMinimumLimitModal] = useState(false);
-  const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(1000);
+  const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(100);
 
   // Fetch balance, banks, and app settings on mount
   useEffect(() => {
@@ -235,10 +235,10 @@ export default function WithdrawScreen() {
         setSubmittingWithdrawal(false);
         return;
       }
-      
-      // Close confirmation modal
-      setShowConfirmModal(false);
-      
+
+      // NOTE: keep the confirm modal open while the network call is in-flight
+      // so the Confirm button can render its loading animation. We only close
+      // it once we have a final result (success or specific error case).
       const result = await submitWithdrawal({
         amount: withdrawalAmount,
         bank_name: selectedBank,
@@ -246,17 +246,15 @@ export default function WithdrawScreen() {
         account_name: accountName,
         bank_code: selectedBankCode,
       });
-      
+
       if (result.success) {
-        // Show success modal
+        setShowConfirmModal(false);
         setShowSuccessModal(true);
-        // Reset form
         setAmount('');
         setAccountNumber('');
         setSelectedBank('');
         setSelectedBankCode('');
         setAccountName('');
-        // Refresh balance
         if (user?.id) {
           fetchBalance();
         }
@@ -264,6 +262,7 @@ export default function WithdrawScreen() {
         const errorMessage = result.error || 'Failed to process withdrawal. Please try again.';
         console.error('Withdrawal failed:', errorMessage);
         const errLower = errorMessage.toLowerCase();
+        setShowConfirmModal(false);
         if (errLower.includes('insufficient')) {
           await fetchBalance();
           setShowInsufficientBalanceModal(true);
@@ -281,6 +280,7 @@ export default function WithdrawScreen() {
       console.error('Error processing withdrawal:', error);
       const errorMessage = error.message || error.toString() || 'Failed to process withdrawal. Please try again.';
       const errLower = errorMessage.toLowerCase();
+      setShowConfirmModal(false);
       if (errLower.includes('insufficient')) {
         fetchBalance().then(() => setShowInsufficientBalanceModal(true));
       } else if (errLower.includes('minimum') || errLower.includes('below') || errLower.includes('limit')) {
@@ -602,13 +602,6 @@ export default function WithdrawScreen() {
             </TouchableOpacity>
             )}
 
-            {/* Info Section */}
-            <View style={styles.infoSection}>
-              <MaterialIcons name="info" size={20} color="#6B46C1" />
-              <ThemedText style={styles.infoText}>
-                Withdrawals are processed within 1-3 business days. A transaction fee may apply.
-              </ThemedText>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -732,7 +725,10 @@ export default function WithdrawScreen() {
         visible={showConfirmModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowConfirmModal(false)}
+        onRequestClose={() => {
+          if (submittingWithdrawal) return;
+          setShowConfirmModal(false);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.confirmModalContent}>
@@ -769,12 +765,22 @@ export default function WithdrawScreen() {
             </View>
             <View style={styles.confirmModalActions}>
               <TouchableOpacity
-                style={styles.confirmCancelButton}
-                onPress={() => setShowConfirmModal(false)}
-                activeOpacity={0.8}
+                style={[
+                  styles.confirmCancelButton,
+                  submittingWithdrawal && styles.confirmCancelButtonDisabled,
+                ]}
+                onPress={() => {
+                  if (submittingWithdrawal) return;
+                  setShowConfirmModal(false);
+                }}
+                activeOpacity={submittingWithdrawal ? 1 : 0.8}
+                disabled={submittingWithdrawal}
               >
                 <ThemedText 
-                  style={styles.confirmCancelText}
+                  style={[
+                    styles.confirmCancelText,
+                    submittingWithdrawal && styles.confirmCancelTextDisabled,
+                  ]}
                   numberOfLines={1}
                   adjustsFontSizeToFit
                   minimumFontScale={0.8}
@@ -909,7 +915,7 @@ export default function WithdrawScreen() {
               adjustsFontSizeToFit
               minimumFontScale={0.8}
             >
-              Your withdrawal request has been submitted successfully. Funds will be transferred to your bank account within 1-5 minutes.
+              Your withdrawal request has been submitted successfully. Funds will be transferred to your bank account instantly.
             </ThemedText>
             <TouchableOpacity
               style={styles.successModalButton}
@@ -1408,6 +1414,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#11181C',
+  },
+  confirmCancelButtonDisabled: {
+    opacity: 0.5,
+  },
+  confirmCancelTextDisabled: {
+    color: '#9CA3AF',
   },
   confirmProceedButton: {
     flex: 1,

@@ -14,7 +14,7 @@ import { useNetworkMode } from '@/contexts/NetworkModeContext';
 import { getUserProfile } from '@/lib/user-service';
 import { getUnreadNotificationsCount } from '@/lib/notification-service';
 import { getWalletBalances, formatBalance, getUsdBalance } from '@/lib/wallet-service';
-import { getUserCryptoBalances, getLunoPrices } from '@/lib/crypto-price-service';
+import { getUserCryptoBalances, getLunoPrices, formatNgnValue } from '@/lib/crypto-price-service';
 import { registerForPushNotificationsAsync, setupNotificationListeners } from '@/lib/push-notification-service';
 import { getUserVerificationStatus } from '@/lib/verification-service';
 import CryptoSelectModal from '@/components/crypto-select-modal';
@@ -171,6 +171,8 @@ export default function HomeScreen() {
           if (data?.type === 'crypto_deposit' && data?.transactionHash) {
             // Navigate to transaction detail
             router.push(`/transaction-detail?id=${data.transactionHash}`);
+          } else if (data?.type === 'wallet_funding') {
+            router.push('/(tabs)/wallet');
           } else if (data?.type === 'kyc_approved') {
             // KYC approved - refresh user data and navigate to profile/verification status
             // The app should reload to show new verification status
@@ -811,7 +813,11 @@ export default function HomeScreen() {
             </View>
             <View style={styles.assetRight}>
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.BTC?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
-              <ThemedText style={styles.assetSubText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{(cryptoBalances?.BTC?.balance ?? 0)} BTC</ThemedText>
+              <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
+                {Number(cryptoBalances?.BTC?.price_ngn) > 0
+                  ? `${formatNgnValue(Number(cryptoBalances.BTC.price_ngn))}/unit · ${cryptoBalances?.BTC?.balance ?? 0} BTC`
+                  : `${cryptoBalances?.BTC?.balance ?? 0} BTC`}
+              </ThemedText>
             </View>
           </TouchableOpacity>
 
@@ -828,7 +834,11 @@ export default function HomeScreen() {
             </View>
             <View style={styles.assetRight}>
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.ETH?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
-              <ThemedText style={styles.assetSubText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{(cryptoBalances?.ETH?.balance ?? 0)} ETH</ThemedText>
+              <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
+                {Number(cryptoBalances?.ETH?.price_ngn) > 0
+                  ? `${formatNgnValue(Number(cryptoBalances.ETH.price_ngn))}/unit · ${cryptoBalances?.ETH?.balance ?? 0} ETH`
+                  : `${cryptoBalances?.ETH?.balance ?? 0} ETH`}
+              </ThemedText>
             </View>
           </TouchableOpacity>
 
@@ -845,7 +855,11 @@ export default function HomeScreen() {
             </View>
             <View style={styles.assetRight}>
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.SOL?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
-              <ThemedText style={styles.assetSubText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{(cryptoBalances?.SOL?.balance ?? 0)} SOL</ThemedText>
+              <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
+                {Number(cryptoBalances?.SOL?.price_ngn) > 0
+                  ? `${formatNgnValue(Number(cryptoBalances.SOL.price_ngn))}/unit · ${cryptoBalances?.SOL?.balance ?? 0} SOL`
+                  : `${cryptoBalances?.SOL?.balance ?? 0} SOL`}
+              </ThemedText>
             </View>
           </TouchableOpacity>
         </View>

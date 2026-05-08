@@ -34,7 +34,7 @@ export default function VerifyEmailScreen() {
 
   useEffect(() => {
     // Check if user is already verified
-    if ((user as any)?.email_confirmed_at) {
+    if (user?.email_confirmed_at) {
       // User is already verified, proceed to PIN setup for signup flow
       // IMPORTANT: For signup flow, PIN creation is mandatory after email verification
       if (flow === 'signup' || !flow) {

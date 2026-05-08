@@ -7,6 +7,11 @@
 //   3. Returns price data in USD and NGN
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import {
+  fetchAlchemyUsdForSymbol,
+  getAlchemyApiKey,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -24,23 +29,6 @@ interface PriceResponse {
   error?: string;
 }
 
-/**
- * Get USD to NGN exchange rate
- */
-async function getUsdToNgnRate(): Promise<number> {
-  try {
-    // Use a reliable exchange rate API
-    const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
-    if (response.ok) {
-      const data = await response.json();
-      return data.rates?.NGN || 1650; // Fallback rate
-    }
-  } catch (error) {
-    console.warn('⚠️ Failed to fetch USD/NGN rate, using default:', error);
-  }
-  return 1650; // Default fallback rate
-}
-
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -48,93 +36,23 @@ serve(async (req) => {
   }
 
   try {
-    // Get Alchemy API key from environment
-    const alchemyApiKey = Deno.env.get('ALCHEMY_API_KEY') || 
-                         Deno.env.get('ALCHEMY_SOLANA_API_KEY');
-    
-    if (!alchemyApiKey) {
-      console.warn('⚠️ ALCHEMY_API_KEY not set, will use fallback');
-    }
-
     let solanaPriceUSD = 0;
     let priceSource = 'Alchemy Prices API';
-    let lastUpdated = new Date().toISOString();
+    const lastUpdated = new Date().toISOString();
 
-    // Use Alchemy Prices API to get SOL token price
-    if (alchemyApiKey) {
+    if (getAlchemyApiKey()) {
       try {
         console.log('📊 Fetching SOL price from Alchemy Prices API...');
-        const alchemyPricesUrl = `https://api.g.alchemy.com/prices/v1/tokens/by-symbol?symbols=SOL`;
-        
-        const alchemyResponse = await fetch(alchemyPricesUrl, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${alchemyApiKey}`,
-            'Accept': 'application/json',
-          },
-        });
-
-        if (alchemyResponse.ok) {
-          const alchemyData = await alchemyResponse.json();
-          console.log('📊 Alchemy Prices API response:', JSON.stringify(alchemyData, null, 2));
-          
-          // Parse Alchemy Prices API response
-          // Response format: { "data": [{ "symbol": "SOL", "prices": [{ "currency": "USD", "value": "116.66", ... }] }] }
-          if (alchemyData.data && Array.isArray(alchemyData.data)) {
-            const solData = alchemyData.data.find((item: any) => item.symbol === 'SOL');
-            if (solData) {
-              // Check for error field first
-              if (solData.error) {
-                console.warn(`⚠️ Alchemy API error for SOL: ${solData.error}`);
-              } else if (solData.prices && Array.isArray(solData.prices) && solData.prices.length > 0) {
-                // Find USD price
-                const usdPrice = solData.prices.find((p: any) => p.currency === 'USD');
-                if (usdPrice && usdPrice.value) {
-                  const parsedPrice = parseFloat(usdPrice.value);
-                  if (!isNaN(parsedPrice) && parsedPrice > 0) {
-                    solanaPriceUSD = parsedPrice;
-                    priceSource = 'Alchemy Prices API';
-                    console.log(`✅ SOL price from Alchemy: $${solanaPriceUSD}`);
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          const errorText = await alchemyResponse.text();
-          console.warn(`⚠️ Alchemy Prices API returned error ${alchemyResponse.status}:`, errorText);
+        solanaPriceUSD = await fetchAlchemyUsdForSymbol('SOL');
+        if (solanaPriceUSD > 0) {
+          console.log(`✅ SOL price from Alchemy: $${solanaPriceUSD}`);
         }
       } catch (alchemyError) {
         console.error('❌ Error fetching from Alchemy Prices API:', alchemyError);
       }
-    }
-
-    // Fallback to CoinGecko if Alchemy fails
-    if (solanaPriceUSD === 0) {
-      try {
-        console.log('📊 Falling back to CoinGecko API...');
-        const coinGeckoResponse = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd&include_24hr_change=true',
-          {
-            headers: {
-              'Accept': 'application/json',
-            },
-          }
-        );
-
-        if (coinGeckoResponse.ok) {
-          const coinGeckoData = await coinGeckoResponse.json();
-          if (coinGeckoData.solana && coinGeckoData.solana.usd) {
-            solanaPriceUSD = coinGeckoData.solana.usd;
-            priceSource = 'CoinGecko (fallback)';
-            console.log(`✅ SOL price from CoinGecko: $${solanaPriceUSD}`);
-          }
-        } else {
-          console.warn('⚠️ CoinGecko API returned error:', coinGeckoResponse.status);
-        }
-      } catch (coinGeckoError) {
-        console.error('❌ Error fetching from CoinGecko:', coinGeckoError);
-      }
+    } else {
+      console.warn('⚠️ ALCHEMY_API_KEY not set');
+      priceSource = 'Fallback';
     }
 
     // Final fallback if all APIs fail

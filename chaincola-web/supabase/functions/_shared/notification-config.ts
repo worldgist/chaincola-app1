@@ -3,7 +3,7 @@
 // IMPORTANT: Ensure logo.png is uploaded to Supabase Storage at: app-assets/logo.png
 
 // Get Supabase URL from environment
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://slleojsdpctxhlsoyenr.supabase.co';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://woyvzsysasgvpigaflul.supabase.co';
 
 // Chaincola logo URL - using logo.png from Supabase Storage
 // This is the ChainCola logo, NOT the Expo logo

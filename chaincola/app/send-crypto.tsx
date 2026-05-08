@@ -22,7 +22,7 @@ import TransactionAuthModal from '@/components/transaction-auth-modal';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserCryptoBalances, formatCryptoBalance, getLunoPrices, formatNgnValue, formatUsdValue } from '@/lib/crypto-price-service';
-import { sendEthereum } from '@/lib/buy-sell-service';
+import { sendBitcoin, sendEthereum, sendUsdc, sendUsdt, sendXrp } from '@/lib/buy-sell-service';
 import { sendSOL } from '@/lib/sol-send-service';
 import { supabase } from '@/lib/supabase';
 import * as Clipboard from 'expo-clipboard';
@@ -146,6 +146,7 @@ export default function SendCryptoScreen() {
   const [feeLoadingEstimate, setFeeLoadingEstimate] = useState(false);
   const [isContractAddress, setIsContractAddress] = useState<boolean>(false);
   const [checkingContract, setCheckingContract] = useState<boolean>(false);
+  const [lastTransactionHash, setLastTransactionHash] = useState<string | null>(null);
 
   // Fetch balance on mount
   useEffect(() => {
@@ -171,6 +172,94 @@ export default function SendCryptoScreen() {
 
   // Send functionality has been removed
   // Fee calculation removed - no longer fetching fees
+  useEffect(() => {
+    const estimateFees = async () => {
+      if (!amount || !crypto?.symbol) {
+        setSendFee(0);
+        setTotalRequired(0);
+        setEstimatedFees(null);
+        return;
+      }
+
+      const amountValue = parseFloat(amount);
+      if (isNaN(amountValue) || amountValue <= 0) {
+        setSendFee(0);
+        setTotalRequired(0);
+        setEstimatedFees(null);
+        return;
+      }
+
+      if (crypto.symbol === 'ETH') {
+        const estimatedNetworkFee = networkFee > 0 ? networkFee : 0.0000275;
+        const platformFee = amountValue * 0.03;
+        setSendFee(estimatedNetworkFee + platformFee);
+        setTotalRequired(amountValue + estimatedNetworkFee + platformFee);
+        setEstimatedFees({
+          networkFee: estimatedNetworkFee,
+          platformFee,
+          totalFee: estimatedNetworkFee + platformFee,
+        });
+        return;
+      }
+
+      if (crypto.symbol === 'SOL') {
+        const estimatedNetworkFee = 0.0001;
+        const platformFee = amountValue * 0.03;
+        setSendFee(estimatedNetworkFee + platformFee);
+        setTotalRequired(amountValue + estimatedNetworkFee + platformFee);
+        setEstimatedFees({
+          networkFee: estimatedNetworkFee,
+          platformFee,
+          totalFee: estimatedNetworkFee + platformFee,
+        });
+        return;
+      }
+
+      if (crypto.symbol === 'BTC') {
+        const estimatedNetworkFee = 0.000025;
+        const platformFee = amountValue * 0.03;
+        setSendFee(estimatedNetworkFee + platformFee);
+        setTotalRequired(amountValue + estimatedNetworkFee + platformFee);
+        setEstimatedFees({
+          networkFee: estimatedNetworkFee,
+          platformFee,
+          totalFee: estimatedNetworkFee + platformFee,
+        });
+        return;
+      }
+
+      if (crypto.symbol === 'XRP') {
+        const estimatedNetworkFee = 0.000012;
+        const platformFee = 0;
+        setSendFee(estimatedNetworkFee);
+        setTotalRequired(amountValue + estimatedNetworkFee);
+        setEstimatedFees({
+          networkFee: estimatedNetworkFee,
+          platformFee,
+          totalFee: estimatedNetworkFee,
+        });
+        return;
+      }
+
+      // USDT/USDC transfer fees are paid in ETH gas, not token amount.
+      if (crypto.symbol === 'USDT' || crypto.symbol === 'USDC') {
+        setSendFee(0);
+        setTotalRequired(amountValue);
+        setEstimatedFees({
+          networkFee: 0.001, // ETH gas estimate from backend logic.
+          platformFee: 0,
+          totalFee: 0.001,
+        });
+        return;
+      }
+
+      setSendFee(0);
+      setTotalRequired(amountValue);
+      setEstimatedFees(null);
+    };
+
+    estimateFees();
+  }, [amount, crypto?.symbol, networkFee]);
 
   const fetchBalance = async () => {
     if (!user?.id || !crypto) {
@@ -641,16 +730,17 @@ export default function SendCryptoScreen() {
           });
 
           if (result.success && result.transaction_hash) {
-            // Show transaction summary modal
-            setTransactionSummary({
-              amount: result.amount || amount,
-              recipient: recipientAddress.trim(),
-              fee: parseFloat(result.fee || '0'),
-              total: parseFloat(result.amount || amount) + parseFloat(result.fee || '0'),
-              transactionHash: result.transaction_hash,
-            });
+            setLastTransactionHash(result.transaction_hash);
+            setSentAmount(result.amount || amount);
             setSending(false);
-            setShowTransactionSummaryModal(true);
+            setShowSuccessModal(true);
+            setAmount('');
+            setRecipientAddress('');
+            setMemo('');
+            setAddressError(null);
+            setTimeout(() => {
+              fetchBalance();
+            }, 1000);
           } else {
             setSending(false);
             const errorMsg = result.error || 'Failed to send ETH. Please try again.';
@@ -704,16 +794,17 @@ export default function SendCryptoScreen() {
           });
 
           if (result.success && result.transaction_hash) {
-            // Show transaction summary modal
-            setTransactionSummary({
-              amount: result.amount || amount,
-              recipient: recipientAddress.trim(),
-              fee: parseFloat(result.fee || '0'),
-              total: parseFloat(result.amount || amount) + parseFloat(result.fee || '0'),
-              transactionHash: result.transaction_hash,
-            });
+            setLastTransactionHash(result.transaction_hash);
+            setSentAmount(result.amount || amount);
             setSending(false);
-            setShowTransactionSummaryModal(true);
+            setShowSuccessModal(true);
+            setAmount('');
+            setRecipientAddress('');
+            setMemo('');
+            setAddressError(null);
+            setTimeout(() => {
+              fetchBalance();
+            }, 1000);
           } else {
             setSending(false);
             const errorMsg = result.error || 'Failed to send SOL. Please try again.';
@@ -737,13 +828,45 @@ export default function SendCryptoScreen() {
             Alert.alert('Error', errorMsg);
           }
         }
+      } else if (crypto.symbol === 'BTC' || crypto.symbol === 'USDT' || crypto.symbol === 'USDC' || crypto.symbol === 'XRP') {
+        let result: any = null;
+        const destination = recipientAddress.trim();
+
+        if (crypto.symbol === 'BTC') {
+          result = await sendBitcoin({ destination_address: destination, amount_btc: amount });
+        } else if (crypto.symbol === 'USDT') {
+          result = await sendUsdt({ destination_address: destination, amount_usdt: amount });
+        } else if (crypto.symbol === 'USDC') {
+          result = await sendUsdc({ destination_address: destination, amount_usdc: amount });
+        } else if (crypto.symbol === 'XRP') {
+          result = await sendXrp({ destination_address: destination, amount_xrp: amount });
+        }
+
+        if (result?.success && result?.transaction_hash) {
+          setLastTransactionHash(result.transaction_hash);
+          setSentAmount(result.amount || amount);
+          setSending(false);
+          setShowSuccessModal(true);
+          setAmount('');
+          setRecipientAddress('');
+          setMemo('');
+          setAddressError(null);
+          setTimeout(() => {
+            fetchBalance();
+          }, 1000);
+        } else {
+          setSending(false);
+          const errorMsg = result?.error || `Failed to send ${crypto.symbol}. Please try again.`;
+          if (errorMsg.toLowerCase().includes('insufficient')) {
+            setInsufficientBalanceError(errorMsg);
+            setShowInsufficientBalanceModal(true);
+          } else {
+            Alert.alert('Error', errorMsg);
+          }
+        }
       } else {
-        // For other cryptocurrencies, show unavailable message
         setSending(false);
-        Alert.alert(
-          'Feature Unavailable',
-          `Send ${crypto.symbol} functionality is currently unavailable. Only ETH and SOL sending are supported at this time.`
-        );
+        Alert.alert('Feature Unavailable', `Send ${crypto.symbol} is not supported yet.`);
       }
     } catch (error: any) {
       console.error('Error sending crypto:', error);
@@ -752,26 +875,9 @@ export default function SendCryptoScreen() {
     }
   };
 
-  const handleTransactionSummaryClose = () => {
-    setShowTransactionSummaryModal(false);
-    // Show success modal after summary
-    if (transactionSummary) {
-      setSentAmount(transactionSummary.amount);
-      setShowSuccessModal(true);
-      setAmount('');
-      setRecipientAddress('');
-      setMemo('');
-      setAddressError(null);
-      setTransactionSummary(null);
-      // Refresh balance after a short delay
-      setTimeout(() => {
-        fetchBalance();
-      }, 1000);
-    }
-  };
-
   const handleSuccessModalClose = () => {
     setShowSuccessModal(false);
+    setLastTransactionHash(null);
     setSentAmount(''); // Clear sent amount when closing modal
     router.back();
   };
@@ -1119,12 +1225,24 @@ export default function SendCryptoScreen() {
                 </View>
                 <View style={styles.summaryRow}>
                   <ThemedText style={styles.summaryLabel}>Network fee</ThemedText>
-                  <ThemedText style={styles.summaryValue}>~0.0001 {crypto.symbol}</ThemedText>
+                  <ThemedText style={styles.summaryValue}>
+                    {crypto.symbol === 'USDT' || crypto.symbol === 'USDC'
+                      ? `~${estimatedFees?.networkFee?.toFixed(6) || '0.001000'} ETH`
+                      : `~${formatCryptoBalance(estimatedFees?.networkFee || 0, crypto.symbol)} ${crypto.symbol}`}
+                  </ThemedText>
                 </View>
+              {(estimatedFees?.platformFee || 0) > 0 && (
+                <View style={styles.summaryRow}>
+                  <ThemedText style={styles.summaryLabel}>Platform fee</ThemedText>
+                  <ThemedText style={styles.summaryValue}>
+                    {formatCryptoBalance(estimatedFees?.platformFee || 0, crypto.symbol)} {crypto.symbol}
+                  </ThemedText>
+                </View>
+              )}
                 <View style={styles.summaryRow}>
                   <ThemedText style={styles.summaryLabel}>Total</ThemedText>
                   <ThemedText style={styles.summaryValue}>
-                    {(parseFloat(amount) + 0.0001).toFixed(8)} {crypto.symbol}
+                    {(totalRequired > 0 ? totalRequired : parseFloat(amount)).toFixed(8)} {crypto.symbol}
                   </ThemedText>
                 </View>
               </View>
@@ -1266,27 +1384,45 @@ export default function SendCryptoScreen() {
                   ) : (
                     <View style={styles.confirmFeeAmountRow}>
                       <ThemedText style={styles.confirmFeeAmount}>
-                        {crypto.symbol} {networkFee.toFixed(8)}
+                        {crypto.symbol} {(estimatedFees?.networkFee || 0).toFixed(8)}
                       </ThemedText>
                       {cryptoPriceNGN && (
                         <ThemedText style={styles.confirmFeeEquivalent}>
-                          {formatNgnValue(networkFee * cryptoPriceNGN)}
+                          {formatNgnValue((estimatedFees?.networkFee || 0) * cryptoPriceNGN)}
                         </ThemedText>
                       )}
                     </View>
                   )}
                 </View>
 
+                {(estimatedFees?.platformFee || 0) > 0 && (
+                  <View style={styles.confirmFeeSection}>
+                    <View style={styles.confirmFeeHeader}>
+                      <ThemedText style={styles.confirmFeeLabel}>PLATFORM FEE</ThemedText>
+                    </View>
+                    <View style={styles.confirmFeeAmountRow}>
+                      <ThemedText style={styles.confirmFeeAmount}>
+                        {crypto.symbol} {(estimatedFees?.platformFee || 0).toFixed(8)}
+                      </ThemedText>
+                      {cryptoPriceNGN && (
+                        <ThemedText style={styles.confirmFeeEquivalent}>
+                          {formatNgnValue((estimatedFees?.platformFee || 0) * cryptoPriceNGN)}
+                        </ThemedText>
+                      )}
+                    </View>
+                  </View>
+                )}
+
                 {/* You Spend */}
                 <View style={styles.confirmSpendSection}>
                   <ThemedText style={styles.confirmSpendLabel}>YOU SPEND</ThemedText>
                   <View style={styles.confirmSpendAmountRow}>
                     <ThemedText style={styles.confirmSpendAmount}>
-                      {crypto.symbol} {(parseFloat(amount || '0') + networkFee).toFixed(8)}
+                      {crypto.symbol} {(totalRequired > 0 ? totalRequired : parseFloat(amount || '0')).toFixed(8)}
                     </ThemedText>
                     {cryptoPriceNGN && (
                       <ThemedText style={styles.confirmSpendEquivalent}>
-                        {formatNgnValue((parseFloat(amount || '0') + networkFee) * cryptoPriceNGN)}
+                        {formatNgnValue((totalRequired > 0 ? totalRequired : parseFloat(amount || '0')) * cryptoPriceNGN)}
                       </ThemedText>
                     )}
                   </View>
@@ -1295,7 +1431,7 @@ export default function SendCryptoScreen() {
                 {/* Note */}
                 <View style={styles.confirmNoteSection}>
                   <ThemedText style={styles.confirmNoteText}>
-                    We have adjusted your send amount to accommodate the network fee
+                    Total spend includes estimated network and platform fees.
                   </ThemedText>
                 </View>
 
@@ -1403,6 +1539,55 @@ export default function SendCryptoScreen() {
                         </View>
                       </>
                     )}
+
+                    <>
+                      <View style={styles.summaryDivider} />
+                      <View style={styles.summaryRow}>
+                        <View style={styles.summaryRowLeft}>
+                          <MaterialIcons name="speed" size={20} color="#6B7280" />
+                          <ThemedText style={styles.summaryLabel}>Network Fee</ThemedText>
+                        </View>
+                        <View style={styles.summaryRowRight}>
+                          <ThemedText style={styles.summaryValue}>
+                            {crypto.symbol === 'USDT' || crypto.symbol === 'USDC'
+                              ? `${(estimatedFees?.networkFee || 0.001).toFixed(6)} ETH`
+                              : `${(estimatedFees?.networkFee || 0).toFixed(8)} ${crypto.symbol}`}
+                          </ThemedText>
+                        </View>
+                      </View>
+                    </>
+
+                    {(estimatedFees?.platformFee || 0) > 0 && (
+                      <>
+                        <View style={styles.summaryDivider} />
+                        <View style={styles.summaryRow}>
+                          <View style={styles.summaryRowLeft}>
+                            <MaterialIcons name="percent" size={20} color="#6B7280" />
+                            <ThemedText style={styles.summaryLabel}>Platform Fee</ThemedText>
+                          </View>
+                          <View style={styles.summaryRowRight}>
+                            <ThemedText style={styles.summaryValue}>
+                              {(estimatedFees?.platformFee || 0).toFixed(8)} {crypto.symbol}
+                            </ThemedText>
+                          </View>
+                        </View>
+                      </>
+                    )}
+
+                    <>
+                      <View style={styles.summaryDivider} />
+                      <View style={styles.summaryRow}>
+                        <View style={styles.summaryRowLeft}>
+                          <MaterialIcons name="calculate" size={20} color="#6B7280" />
+                          <ThemedText style={styles.summaryLabel}>Total</ThemedText>
+                        </View>
+                        <View style={styles.summaryRowRight}>
+                          <ThemedText style={styles.summaryValue}>
+                            {(totalRequired > 0 ? totalRequired : parseFloat(amount || '0')).toFixed(8)} {crypto.symbol}
+                          </ThemedText>
+                        </View>
+                      </View>
+                    </>
                   </View>
                 </View>
                 
@@ -1485,6 +1670,11 @@ export default function SendCryptoScreen() {
             >
               You have successfully sent {sentAmount ? parseFloat(sentAmount).toFixed(8) : '0.00000000'} {crypto.symbol} to the recipient address.
             </ThemedText>
+            {lastTransactionHash && (
+              <ThemedText style={styles.summaryHashValue}>
+                Tx: {lastTransactionHash}
+              </ThemedText>
+            )}
             <TouchableOpacity
               style={styles.successModalButton}
               onPress={handleSuccessModalClose}

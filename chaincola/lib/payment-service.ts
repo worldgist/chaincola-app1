@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 export interface InitializePaymentParams {
   amount: number;
@@ -78,12 +79,13 @@ export async function initializePayment(
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     // Get Supabase anon key for API calls
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -198,11 +200,12 @@ export async function verifyPayment(
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -299,8 +302,38 @@ export async function pollPaymentStatus(
   };
 }
 
+/**
+ * Reconcile PENDING Flutterwave wallet deposits with Flutterwave (credits wallet when payment succeeded).
+ * Safe to call often — verify edge function is idempotent for already-completed rows.
+ */
+export async function syncPendingWalletFundings(userId: string): Promise<void> {
+  try {
+    const { data: rows, error } = await supabase
+      .from('transactions')
+      .select('external_reference')
+      .eq('user_id', userId)
+      .eq('status', 'PENDING')
+      .eq('transaction_type', 'DEPOSIT')
+      .not('external_reference', 'is', null)
+      .like('external_reference', 'CHAINCOLA-%');
 
+    if (error || !rows?.length) {
+      return;
+    }
 
+    const refs = [...new Set(rows.map((r) => r.external_reference).filter(Boolean))] as string[];
 
+    await Promise.allSettled(
+      refs.map(async (txRef) => {
+        const res = await verifyPayment({ tx_ref: txRef });
+        if (!res.verified && res.error) {
+          console.warn('syncPendingWalletFundings:', txRef, res.error);
+        }
+      }),
+    );
+  } catch (e) {
+    console.warn('syncPendingWalletFundings failed:', e);
+  }
+}
 
 

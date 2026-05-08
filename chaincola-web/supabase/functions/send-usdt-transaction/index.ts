@@ -218,8 +218,8 @@ serve(async (req) => {
     // DECRYPT PRIVATE KEY - ONLY TIME DECRYPTION HAPPENS
     // ============================================================
     const possibleEncryptionKeys = [
-      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('TRON_ENCRYPTION_KEY'),
     ].filter(key => key && key.length > 0);
 

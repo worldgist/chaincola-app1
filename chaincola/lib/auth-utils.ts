@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { getBiometricPreference, updateBiometricPreference } from '@/lib/pin-service';
 
 /**
  * PIN Management Utilities
@@ -53,12 +55,22 @@ export async function isPINSetup(): Promise<boolean> {
  */
 export const BIOMETRIC_ENABLED_KEY = (userId: string) => `biometric_enabled_${userId}`;
 export const BIOMETRIC_TYPE_KEY = 'biometric_type';
+export const BIOMETRIC_LOGIN_ENABLED_KEY = 'biometric_login_enabled';
 
 export async function saveBiometricPreference(userId: string, enabled: boolean, type?: string): Promise<boolean> {
   try {
     await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY(userId), enabled ? 'true' : 'false');
+    // Also gate biometric sign-in on the login screen
+    await AsyncStorage.setItem(BIOMETRIC_LOGIN_ENABLED_KEY, enabled ? 'true' : 'false');
     if (type) {
       await AsyncStorage.setItem(BIOMETRIC_TYPE_KEY, type);
+    }
+    // Keep Supabase in sync so other screens (and backend) see the same value
+    try {
+      await updateBiometricPreference(userId, enabled);
+    } catch (e) {
+      // Don't fail the UI if the network is down; local storage is still updated
+      console.warn('biometric: failed to sync preference to Supabase', (e as Error)?.message);
     }
     return true;
   } catch (error) {
@@ -70,7 +82,19 @@ export async function saveBiometricPreference(userId: string, enabled: boolean, 
 export async function isBiometricEnabled(userId: string): Promise<boolean> {
   try {
     const enabled = await AsyncStorage.getItem(BIOMETRIC_ENABLED_KEY(userId));
-    return enabled === 'true';
+    if (enabled === 'true') return true;
+
+    // Fallback to Supabase (helps after reinstall / storage clear)
+    try {
+      const dbEnabled = await getBiometricPreference(userId);
+      if (dbEnabled) {
+        await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY(userId), 'true');
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
   } catch (error) {
     console.error('Error checking biometric preference:', error);
     return false;
@@ -79,7 +103,18 @@ export async function isBiometricEnabled(userId: string): Promise<boolean> {
 
 export async function getBiometricType(): Promise<string | null> {
   try {
-    return await AsyncStorage.getItem(BIOMETRIC_TYPE_KEY);
+    const cached = await AsyncStorage.getItem(BIOMETRIC_TYPE_KEY);
+    if (cached) return cached;
+
+    // Detect supported biometric type on device
+    const supportedTypes = await LocalAuthentication.supportedAuthenticationTypesAsync();
+    let t: string | null = null;
+    if (supportedTypes.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) t = 'Face ID';
+    else if (supportedTypes.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) t = 'Touch ID';
+    else if (supportedTypes.length > 0) t = 'Biometric';
+
+    if (t) await AsyncStorage.setItem(BIOMETRIC_TYPE_KEY, t);
+    return t;
   } catch (error) {
     console.error('Error getting biometric type:', error);
     return null;
@@ -90,6 +125,12 @@ export async function deleteBiometricPreference(userId: string): Promise<boolean
   try {
     await AsyncStorage.removeItem(BIOMETRIC_ENABLED_KEY(userId));
     await AsyncStorage.removeItem(BIOMETRIC_TYPE_KEY);
+    await AsyncStorage.setItem(BIOMETRIC_LOGIN_ENABLED_KEY, 'false');
+    try {
+      await updateBiometricPreference(userId, false);
+    } catch {
+      // ignore
+    }
     return true;
   } catch (error) {
     console.error('Error deleting biometric preference:', error);

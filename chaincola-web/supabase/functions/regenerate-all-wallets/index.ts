@@ -176,8 +176,8 @@ serve(async (req) => {
           publicKeyHex = Array.from(publicKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('');
           
           // Encrypt private key
-          const encryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') ||
-                               Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+          const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                               Deno.env.get('BTC_ENCRYPTION_KEY') ||
                                Deno.env.get('ETH_ENCRYPTION_KEY');
           
           if (encryptionKey) {
@@ -191,8 +191,8 @@ serve(async (req) => {
           const privateKeyHex = wallet.privateKey.replace('0x', '');
           publicKeyHex = wallet.publicKey.replace('0x', '');
           
-          const encryptionKey = Deno.env.get('ETH_ENCRYPTION_KEY') ||
-                               Deno.env.get('CRYPTO_ENCRYPTION_KEY');
+          const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                               Deno.env.get('ETH_ENCRYPTION_KEY');
           
           if (encryptionKey) {
             encryptedPrivateKey = await encryptPrivateKey(privateKeyHex, encryptionKey);
@@ -208,8 +208,8 @@ serve(async (req) => {
           const privateKeyHex = Array.from(secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
           publicKeyHex = Array.from(keypair.publicKey.toBytes()).map(b => b.toString(16).padStart(2, '0')).join('');
           
-          const encryptionKey = Deno.env.get('SOL_ENCRYPTION_KEY') ||
-                               Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+          const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                               Deno.env.get('SOL_ENCRYPTION_KEY') ||
                                Deno.env.get('ETH_ENCRYPTION_KEY');
           
           if (encryptionKey) {
@@ -253,8 +253,8 @@ serve(async (req) => {
           
           destinationTag = Math.floor(Math.random() * 4294967295).toString(); // Max 32-bit unsigned int
           
-          const encryptionKey = Deno.env.get('XRP_ENCRYPTION_KEY') ||
-                               Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+          const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                               Deno.env.get('XRP_ENCRYPTION_KEY') ||
                                Deno.env.get('ETH_ENCRYPTION_KEY');
           
           if (encryptionKey) {

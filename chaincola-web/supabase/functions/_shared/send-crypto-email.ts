@@ -199,6 +199,65 @@ export async function sendWalletFundingEmail(
 }
 
 /**
+ * Wallet funding receipt via send-email → Resend (Expo handles mobile push separately).
+ */
+export async function sendFlutterwaveWalletFundingReceiptEmail(
+  supabase: any,
+  userId: string,
+  params: {
+    creditAmount: number;
+    depositAmount: number;
+    feeAmount: number;
+    currency: string;
+    transactionId: string;
+  },
+): Promise<void> {
+  try {
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('email, full_name')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    let userEmail = profile?.email ?? null;
+    let userName = (profile?.full_name && String(profile.full_name).trim()) || 'Customer';
+
+    if (!userEmail) {
+      const { data: authData, error: authErr } = await supabase.auth.admin.getUserById(userId);
+      if (authErr) {
+        console.warn('⚠️ Could not load user for wallet funding email:', authErr.message);
+        return;
+      }
+      userEmail = authData.user?.email ?? null;
+      const meta = authData.user?.user_metadata as Record<string, unknown> | undefined;
+      const fn = meta?.full_name;
+      if (typeof fn === 'string' && fn.trim()) userName = fn.trim();
+    }
+
+    if (!userEmail) {
+      console.log(`⏭️ No email for user ${userId}; skipping wallet funding receipt email`);
+      return;
+    }
+
+    const { creditAmount, depositAmount, feeAmount, currency, transactionId } = params;
+    const fmt = (n: number) =>
+      n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    await sendWalletFundingEmail(supabase, userId, userEmail, userName, {
+      amount: fmt(depositAmount),
+      netAmount: fmt(creditAmount),
+      fee: fmt(feeAmount),
+      currency,
+      transactionId: String(transactionId),
+      transactionDate: new Date().toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' }),
+      status: 'COMPLETED',
+    });
+  } catch (e) {
+    console.error('⚠️ sendFlutterwaveWalletFundingReceiptEmail:', e);
+  }
+}
+
+/**
  * Sends crypto deposit success email
  */
 export async function sendCryptoDepositEmail(

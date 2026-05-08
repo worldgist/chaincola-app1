@@ -14,6 +14,8 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { ethers } from "ethers";
+import { bytesToBase64 } from "../_shared/bytes-to-base64.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -89,8 +91,7 @@ async function encryptPrivateKey(privateKey: string, encryptionKey: string): Pro
     combined.set(iv, salt.length);
     combined.set(new Uint8Array(encrypted), salt.length + iv.length);
 
-    // Return as base64 string
-    const base64Result = btoa(String.fromCharCode(...combined));
+    const base64Result = bytesToBase64(combined);
     
     if (!base64Result || base64Result.length === 0) {
       throw new Error('Base64 encoding returned empty result');
@@ -201,9 +202,6 @@ serve(async (req) => {
     
     console.log(`🔑 Generating new ETH wallet for user ${user.id} on ${network}...`);
 
-    // Import ethers.js (latest version)
-    const { ethers } = await import("https://esm.sh/ethers@6.9.0");
-    
     // Generate a fresh new wallet with cryptographically secure random private key
     // ethers.Wallet.createRandom() uses Web Crypto API for secure randomness
     // This generates a 256-bit private key using cryptographically secure RNG
@@ -230,14 +228,21 @@ serve(async (req) => {
     // Encryption uses AES-256-GCM with PBKDF2 key derivation.
     // ============================================================
     
-    // Get encryption key from Supabase Secrets
-    const encryptionKey = Deno.env.get('ETH_ENCRYPTION_KEY') ||
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                         Deno.env.get('TRON_ENCRYPTION_KEY');
+    // Supabase Dashboard → Project Settings → Edge Functions → Secrets
+    const encryptionKey =
+      Deno.env.get("CRYPTO_ENCRYPTION_KEY") ||
+      Deno.env.get("ETH_ENCRYPTION_KEY") ||
+      Deno.env.get("BTC_ENCRYPTION_KEY") ||
+      Deno.env.get("SOL_ENCRYPTION_KEY") ||
+      Deno.env.get("TRON_ENCRYPTION_KEY");
 
     if (!encryptionKey) {
-      console.error('❌ ETH_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or TRON_ENCRYPTION_KEY not set in Supabase secrets');
-      throw new Error('Encryption key not configured. Please set ETH_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or TRON_ENCRYPTION_KEY in Supabase secrets.');
+      console.error(
+        "❌ No wallet encryption secret: set CRYPTO_ENCRYPTION_KEY (recommended) or ETH_ENCRYPTION_KEY in Edge Function secrets",
+      );
+      throw new Error(
+        "Encryption key not configured. In Supabase: Project Settings → Edge Functions → Secrets — add CRYPTO_ENCRYPTION_KEY (one strong random string used for all chains) or ETH_ENCRYPTION_KEY.",
+      );
     }
 
     let encryptedPrivateKey: string;

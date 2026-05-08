@@ -144,8 +144,8 @@ async function generateBTCWalletDirect(userId: string, network: string): Promise
   const privateKeyHex = Array.from(privateKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('');
   const publicKeyHex = Array.from(publicKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('');
   
-  const encryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') ||
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+  const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                       Deno.env.get('BTC_ENCRYPTION_KEY') ||
                        Deno.env.get('ETH_ENCRYPTION_KEY');
   
   if (!encryptionKey) {
@@ -189,8 +189,8 @@ async function generateETHWalletDirect(userId: string, network: string): Promise
   const privateKeyHex = wallet.privateKey.replace('0x', '');
   const publicKeyHex = wallet.publicKey.replace('0x', '');
   
-  const encryptionKey = Deno.env.get('ETH_ENCRYPTION_KEY') ||
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+  const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                       Deno.env.get('ETH_ENCRYPTION_KEY') ||
                        Deno.env.get('TRON_ENCRYPTION_KEY');
   
   if (!encryptionKey) {
@@ -263,8 +263,8 @@ async function generateXRPWalletDirect(userId: string, network: string): Promise
   const publicKeyHex = Array.from(publicKeyBytes).map(b => b.toString(16).padStart(2, '0')).join('');
   const destinationTag = Math.floor(Math.random() * 4294967295).toString();
   
-  const encryptionKey = Deno.env.get('XRP_ENCRYPTION_KEY') ||
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+  const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                       Deno.env.get('XRP_ENCRYPTION_KEY') ||
                        Deno.env.get('ETH_ENCRYPTION_KEY');
   
   if (!encryptionKey) {
@@ -309,8 +309,8 @@ async function generateSOLWalletDirect(userId: string, network: string): Promise
   const publicKeyHex = Array.from(keypair.publicKey.toBytes()).map(b => b.toString(16).padStart(2, '0')).join('');
   const privateKeyHex = Array.from(keypair.secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
   
-  const encryptionKey = Deno.env.get('SOL_ENCRYPTION_KEY') ||
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+  const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                       Deno.env.get('SOL_ENCRYPTION_KEY') ||
                        Deno.env.get('ETH_ENCRYPTION_KEY');
   
   if (!encryptionKey) {
@@ -349,26 +349,26 @@ async function canDecryptWallet(
 
   if (asset === 'BTC') {
     possibleKeys = [
-      Deno.env.get('BTC_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('BTC_ENCRYPTION_KEY'),
       Deno.env.get('ETH_ENCRYPTION_KEY'),
     ].filter(k => k) as string[];
   } else if (asset === 'ETH') {
     possibleKeys = [
-      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('TRON_ENCRYPTION_KEY'),
     ].filter(k => k) as string[];
   } else if (asset === 'XRP') {
     possibleKeys = [
-      Deno.env.get('XRP_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('XRP_ENCRYPTION_KEY'),
       Deno.env.get('ETH_ENCRYPTION_KEY'),
     ].filter(k => k) as string[];
   } else if (asset === 'SOL') {
     possibleKeys = [
-      Deno.env.get('SOL_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('SOL_ENCRYPTION_KEY'),
       Deno.env.get('ETH_ENCRYPTION_KEY'),
     ].filter(k => k) as string[];
   }

@@ -29,8 +29,8 @@ console.log(`   supabase secrets set BTC_ENCRYPTION_KEY="${encryptionKey}"\n`);
 console.log('⚠️  IMPORTANT: Save this key securely! You will need it to decrypt existing encrypted data.\n');
 console.log('💡 Tip: Store this key in a password manager or secure vault.\n');
 
-// Also output as environment variable format for easy copy-paste
-console.log('📝 Environment variable format (for .env files):');
+// Reference only — real value belongs in Supabase Edge secrets, not in the mobile app.
+console.log('📝 Reference (use `supabase secrets set` above; do not put this in Expo / NEXT_PUBLIC env):');
 console.log('═══════════════════════════════════════════════════════════');
 console.log(`CRYPTO_ENCRYPTION_KEY="${encryptionKey}"`);
 console.log('═══════════════════════════════════════════════════════════\n');

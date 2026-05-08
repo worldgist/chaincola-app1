@@ -1,8 +1,11 @@
-// Price Oracle Service
-// Fetches prices from multiple sources (CoinGecko, Luno, Binance) with fallback mechanism
+// Price Oracle Service — Alchemy, Luno, Binance (DB-driven priority)
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  fetchAlchemyUsdForSymbol,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -243,53 +246,19 @@ serve(async (req) => {
   }
 });
 
-// Fetch price from CoinGecko
-async function fetchPriceFromCoinGecko(asset: string): Promise<PriceData | null> {
-  const assetMap: Record<string, string> = {
-    'BTC': 'bitcoin',
-    'ETH': 'ethereum',
-    'USDT': 'tether',
-    'USDC': 'usd-coin',
-    'XRP': 'ripple',
-    'SOL': 'solana'
-  };
-
-  const coinId = assetMap[asset];
-  if (!coinId) return null;
-
+async function fetchPriceFromAlchemy(asset: string): Promise<PriceData | null> {
   try {
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd,ngn&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
-      {
-        headers: {
-          'Accept': 'application/json'
-        }
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`CoinGecko API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const coinData = data[coinId];
-
-    if (!coinData) return null;
-
-    // Get NGN rate (if not available, calculate from USD)
-    let price_ngn = coinData.ngn || (coinData.usd * 1500); // Fallback NGN rate
-
+    const price_usd = await fetchAlchemyUsdForSymbol(asset);
+    if (!price_usd || price_usd <= 0) return null;
+    const ngnRate = await getUsdToNgnRate();
     return {
       asset,
-      price_usd: coinData.usd,
-      price_ngn: price_ngn,
-      price_source: 'COINGECKO',
-      price_change_24h: coinData.usd_24h_change,
-      volume_24h: coinData.usd_24h_vol,
-      market_cap: coinData.usd_market_cap
+      price_usd,
+      price_ngn: price_usd * ngnRate,
+      price_source: 'ALCHEMY',
     };
   } catch (error) {
-    console.error(`CoinGecko fetch error for ${asset}:`, error);
+    console.error(`Alchemy fetch error for ${asset}:`, error);
     return null;
   }
 }
@@ -367,8 +336,9 @@ async function fetchPriceFromBinance(asset: string): Promise<PriceData | null> {
 // Main fetch function that routes to appropriate source
 async function fetchPriceFromSource(asset: string, source: PriceSource): Promise<PriceData | null> {
   switch (source.source_name) {
+    case 'ALCHEMY':
     case 'COINGECKO':
-      return fetchPriceFromCoinGecko(asset);
+      return fetchPriceFromAlchemy(asset);
     case 'LUNO':
       return fetchPriceFromLuno(asset);
     case 'BINANCE':

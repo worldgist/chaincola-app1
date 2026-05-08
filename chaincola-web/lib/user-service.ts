@@ -1,6 +1,13 @@
 import { createClient } from './supabase/client';
 
-const supabase = createClient();
+let supabaseClient: ReturnType<typeof createClient> | null = null;
+
+function getSupabase() {
+  if (!supabaseClient) {
+    supabaseClient = createClient();
+  }
+  return supabaseClient;
+}
 
 export interface UserProfile {
   id?: string;
@@ -27,7 +34,7 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
       return null;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from('user_profiles')
       .select('*')
       .eq('user_id', userId)
@@ -204,7 +211,7 @@ export async function updateUserProfile(
     // Handle email update carefully - check for conflicts
     if (updates.email !== undefined && updates.email !== null && updates.email !== '') {
       // Check if email already exists for another user
-      const { data: existingUser } = await supabase
+      const { data: existingUser } = await getSupabase()
         .from('user_profiles')
         .select('user_id')
         .eq('email', updates.email)
@@ -237,7 +244,7 @@ export async function updateUserProfile(
 
     if (existingProfile) {
       // Update existing profile
-      const { error } = await supabase
+      const { error } = await getSupabase()
         .from('user_profiles')
         .update(dbUpdates)
         .eq('user_id', userId);
@@ -248,7 +255,7 @@ export async function updateUserProfile(
       }
     } else {
       // Create new profile if it doesn't exist
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user } } = await getSupabase().auth.getUser();
       
       const newProfile = {
         user_id: userId,
@@ -261,7 +268,7 @@ export async function updateUserProfile(
         ...dbUpdates,
       };
 
-      const { error } = await supabase
+      const { error } = await getSupabase()
         .from('user_profiles')
         .insert(newProfile);
 
@@ -274,7 +281,7 @@ export async function updateUserProfile(
     // Also update auth user metadata if name changed
     if (dbUpdates.full_name) {
       try {
-        const { error: metadataError } = await supabase.auth.updateUser({
+        const { error: metadataError } = await getSupabase().auth.updateUser({
           data: {
             full_name: dbUpdates.full_name,
             phone_number: dbUpdates.phone_number,

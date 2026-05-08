@@ -6,6 +6,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
+import { syncPendingWalletFundings } from '@/lib/payment-service';
 import { getUserTransactions, TransactionListItem } from '@/lib/transaction-service';
 import { createQuickDemoTransactions } from '@/lib/demo-transactions-service';
 import { Alert } from 'react-native';
@@ -34,6 +35,13 @@ export default function TransactionsScreen() {
         setTransactions([]);
       } else if (!isAborted) {
         setTransactions(fetchedTransactions);
+        // Reconcile Flutterwave PENDING deposits in background (don’t block the list)
+        void syncPendingWalletFundings(user.id).then(async () => {
+          const { transactions: updated, error: e2 } = await getUserTransactions(user.id, 100);
+          if (!e2 && updated?.length) {
+            setTransactions(updated);
+          }
+        });
       }
     } catch (err: any) {
       if (err?.name === 'AbortError' || err?.message === 'Aborted') {

@@ -1,15 +1,30 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
+import { getSupabaseAuthRedirectTo } from '@/lib/supabase-auth-redirect';
 import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { deleteBiometricCredentials } from '@/lib/biometric-service';
 import { createReferralRelationship, validateReferralCode } from '@/lib/referral-service';
 import { getUserProfile, updateUserProfile } from '@/lib/user-service';
 
+/** Stale AsyncStorage session (revoked user, rotated project, cleared server sessions). */
+function isInvalidStoredSessionError(err: unknown): boolean {
+  const msg =
+    err && typeof err === 'object' && 'message' in err
+      ? String((err as { message: string }).message).toLowerCase()
+      : '';
+  return (
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh token not found') ||
+    (msg.includes('refresh token') && msg.includes('not found'))
+  );
+}
+
 // Use Supabase types
 interface User {
   id: string;
   email?: string;
+  email_confirmed_at?: string | null;
   metadata?: {
     full_name?: string;
     name?: string;
@@ -47,6 +62,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return {
       id: supabaseUser.id,
       email: supabaseUser.email,
+      email_confirmed_at: supabaseUser.email_confirmed_at ?? null,
       metadata: supabaseUser.user_metadata || {},
     };
   }, []);
@@ -54,7 +70,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Helper to clear invalid session
   const clearInvalidSession = useCallback(async () => {
     try {
-      // TODO: Replace with new auth system signOut
+      // Local-only: avoids another failing network refresh
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
       setSession(null);
       setUser(null);
       await AsyncStorage.multiRemove([
@@ -78,12 +95,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // Don't automatically restore session on app start - user must manually sign in
-    // Sessions will still persist during the current app session after manual sign-in
-    // Just set loading to false so the app can render
-    setLoading(false);
+    let cancelled = false;
 
-    // Set up Supabase auth state change listener
+    void (async () => {
+      const { data: { session: existing }, error } = await supabase.auth.getSession();
+      if (cancelled) return;
+      if (error) {
+        if (isInvalidStoredSessionError(error)) {
+          console.warn('⚠️ Stored Supabase session is invalid; clearing local auth.');
+          await clearInvalidSession();
+        } else {
+          console.warn('⚠️ Supabase getSession:', error.message);
+        }
+      } else if (existing?.user) {
+        setSession(existing);
+        setUser(convertSupabaseUser(existing.user));
+      }
+      if (!cancelled) setLoading(false);
+    })();
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       // Skip processing during signup to avoid infinite loops
       if (isSigningUpRef.current) {
@@ -139,9 +169,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
     };
-  }, [clearInvalidSession, convertSupabaseUser]);
+  }, [convertSupabaseUser]);
 
   // Helper to ensure user profile exists
   // This should only be called for existing users, not during signup
@@ -150,7 +181,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Get current session from Supabase directly instead of relying on state
       const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
       
-      if (sessionError || !currentSession) {
+      if (sessionError) {
+        if (isInvalidStoredSessionError(sessionError)) {
+          await clearInvalidSession();
+        }
+        console.warn('⚠️ No session available, skipping user profile check');
+        return;
+      }
+      if (!currentSession) {
         console.warn('⚠️ No session available, skipping user profile check');
         return;
       }
@@ -326,7 +364,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             full_name: metadata?.fullName || '',
             phone_number: metadata?.phoneNumber || '',
           },
-          emailRedirectTo: undefined, // We'll handle email verification in-app
+          emailRedirectTo: getSupabaseAuthRedirectTo('auth/callback'),
         },
       });
 
@@ -491,7 +529,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const resetPassword = async (email: string) => {
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: undefined, // We'll handle password reset in-app
+        redirectTo: getSupabaseAuthRedirectTo('auth/callback'),
       });
       
       if (error) {
@@ -506,15 +544,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resendVerificationEmail = async (email: string, type: 'signup' | 'recovery' = 'signup') => {
     try {
+      const emailRedirectTo = getSupabaseAuthRedirectTo('auth/callback');
       const { error } = await supabase.auth.resend({
         type: type === 'recovery' ? 'recovery' : 'signup',
         email: email.trim(),
+        options: {
+          emailRedirectTo,
+        },
       });
-      
+
       if (error) {
         return { error };
       }
-      
+
       return { error: null };
     } catch (error: any) {
       return { error };

@@ -1,0 +1,6 @@
+# https://supabase.com/docs/guides/functions/function-configuration
+# Flutterwave calls this URL from their servers — no Supabase user JWT is present.
+# Without verify_jwt = false, the API gateway returns 401 and webhook delivery fails.
+
+[functions.flutterwave-webhook]
+verify_jwt = false

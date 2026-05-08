@@ -23,7 +23,7 @@ SELECT cron.schedule(
   $$
   SELECT
     net.http_post(
-      url := 'https://slleojsdpctxhlsoyenr.supabase.co/functions/v1/treasury-reconciliation-engine',
+      url := 'https://woyvzsysasgvpigaflul.supabase.co/functions/v1/treasury-reconciliation-engine',
       headers := jsonb_build_object(
         'Content-Type', 'application/json',
         'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NjE2NTk5MSwiZXhwIjoyMDgxNzQxOTkxfQ.Tx3O8EyKK3ZqcJef2CloZI4RTmDY9Ab59SXBgmubBsA'

@@ -1,0 +1,11 @@
+{
+  "name": "chaincola-app1",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix chaincola start",
+    "start:8082": "npm --prefix chaincola run start -- --port 8082",
+    "expo": "npm --prefix chaincola start",
+    "expo:lan": "npm --prefix chaincola run start:lan",
+    "expo:tunnel": "npm --prefix chaincola run start:tunnel"
+  }
+}

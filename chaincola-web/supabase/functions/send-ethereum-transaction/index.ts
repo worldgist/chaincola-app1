@@ -432,19 +432,17 @@ serve(async (req) => {
     // The decrypted key exists ONLY in memory and is immediately discarded.
     // ============================================================
     
-    // Get all possible encryption keys from Supabase Secrets
-    // Try multiple keys in order to handle wallets encrypted with different keys
-    // Priority: ETH_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > TRON_ENCRYPTION_KEY
+    // Try keys in order: shared CRYPTO first (recommended), then legacy per-chain secrets
     const possibleEncryptionKeys = [
-      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
       Deno.env.get('TRON_ENCRYPTION_KEY'),
     ].filter(key => key && key.length > 0); // Filter out undefined/null/empty keys
     
     if (possibleEncryptionKeys.length === 0) {
-      console.error('❌ No encryption keys found. ETH_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or TRON_ENCRYPTION_KEY must be set in Supabase secrets');
+      console.error('❌ No encryption keys found. Set CRYPTO_ENCRYPTION_KEY (recommended) or ETH_ENCRYPTION_KEY / TRON_ENCRYPTION_KEY in Edge Function secrets');
       return new Response(
-        JSON.stringify({ success: false, error: 'Encryption key not configured. Please set ETH_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or TRON_ENCRYPTION_KEY in Supabase secrets.' }),
+        JSON.stringify({ success: false, error: 'Encryption key not configured. Set CRYPTO_ENCRYPTION_KEY in Supabase → Project Settings → Edge Functions → Secrets.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -463,8 +461,8 @@ serve(async (req) => {
       let decryptionError: Error | null = null;
       for (let i = 0; i < possibleEncryptionKeys.length; i++) {
         const encryptionKey = possibleEncryptionKeys[i];
-        const keyName = Deno.env.get('ETH_ENCRYPTION_KEY') === encryptionKey ? 'ETH_ENCRYPTION_KEY' :
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY') === encryptionKey ? 'CRYPTO_ENCRYPTION_KEY' :
+        const keyName = Deno.env.get('CRYPTO_ENCRYPTION_KEY') === encryptionKey ? 'CRYPTO_ENCRYPTION_KEY' :
+                       Deno.env.get('ETH_ENCRYPTION_KEY') === encryptionKey ? 'ETH_ENCRYPTION_KEY' :
                        'TRON_ENCRYPTION_KEY';
         
         try {

@@ -19,7 +19,7 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import * as Clipboard from 'expo-clipboard';
 import { getCryptoPrice, formatCryptoBalance, formatNgnValue } from '@/lib/crypto-price-service';
-import { supabase } from '@/lib/supabase';
+import { getNgnBalance } from '@/lib/wallet-service';
 import { instantBuyCrypto } from '@/lib/buy-sell-service';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
 
@@ -98,35 +98,8 @@ export default function BuyCryptoScreen() {
 
   const fetchBalance = async () => {
     if (!user?.id) return;
-    
     try {
-      // Try wallets table first
-      const { data: wallet, error } = await supabase
-        .from('wallets')
-        .select('ngn_balance')
-        .eq('user_id', user.id)
-        .single();
-
-      if (!error && wallet) {
-        setNgnBalance(parseFloat(wallet.ngn_balance?.toString() || '0') || 0);
-        return;
-      }
-
-      // Fallback to wallet_balances table
-      const { data: balance, error: balanceError } = await supabase
-        .from('wallet_balances')
-        .select('balance')
-        .eq('user_id', user.id)
-        .eq('currency', 'NGN')
-        .single();
-
-      if (!balanceError && balance) {
-        setNgnBalance(parseFloat(balance.balance?.toString() || '0') || 0);
-        return;
-      }
-
-      // Default to 0 if no balance found
-      setNgnBalance(0);
+      setNgnBalance(await getNgnBalance(user.id));
     } catch (error) {
       console.error('Error fetching NGN balance:', error);
       setNgnBalance(0);

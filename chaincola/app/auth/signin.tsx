@@ -17,7 +17,8 @@ import { useFocusEffect, Link, router } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserVerificationStatus } from '@/lib/verification-service';
-// Supabase removed
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BIOMETRIC_LOGIN_ENABLED_KEY, saveBiometricPreference } from '@/lib/auth-utils';
 import { 
   checkBiometricAvailability as checkBiometricService,
   hasBiometricCredentials,
@@ -77,6 +78,15 @@ export default function SignInScreen() {
     // Add a small delay to ensure SecureStore is ready
     await new Promise(resolve => setTimeout(resolve, 200));
     
+    // If user turned biometric OFF in settings, do not offer biometric sign-in
+    const biometricLoginEnabled = await AsyncStorage.getItem(BIOMETRIC_LOGIN_ENABLED_KEY);
+    if (biometricLoginEnabled === 'false') {
+      // Clear any leftover credentials to be safe
+      await deleteBiometricCredentials().catch(() => {});
+      setHasStoredCredentials(false);
+      return;
+    }
+
     // Check if user has stored credentials for biometric login
     const hasCredentials = await hasBiometricCredentials();
     setHasStoredCredentials(hasCredentials);
@@ -99,6 +109,14 @@ export default function SignInScreen() {
       const result = await saveBiometricCredentials(pendingEmail, pendingPassword);
       
       if (result.success) {
+        // Mark biometric sign-in as enabled (user explicitly opted-in)
+        await AsyncStorage.setItem(BIOMETRIC_LOGIN_ENABLED_KEY, 'true');
+        
+        // Also set the in-app biometric preference so the Profile toggle turns ON
+        if (user?.id) {
+          await saveBiometricPreference(user.id, true, biometricType || undefined);
+        }
+
         // Additional verification after save
         await new Promise(resolve => setTimeout(resolve, 500));
         const hasCredentials = await hasBiometricCredentials();
@@ -202,6 +220,17 @@ export default function SignInScreen() {
       if (user) {
         console.log('User already logged in, navigating to home...');
         router.replace('/(tabs)');
+        return;
+      }
+
+      // Block biometric sign-in if user disabled it in profile
+      const biometricLoginEnabled = await AsyncStorage.getItem(BIOMETRIC_LOGIN_ENABLED_KEY);
+      if (biometricLoginEnabled === 'false') {
+        await deleteBiometricCredentials().catch(() => {});
+        Alert.alert(
+          'Biometric Disabled',
+          'Biometric authentication is currently disabled. Enable it again in your Profile settings to use biometric sign-in.'
+        );
         return;
       }
 
@@ -691,7 +720,7 @@ export default function SignInScreen() {
                 <ThemedText style={styles.modalSkipText}>Skip</ThemedText>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalButton, biometricLoading && styles.modalButtonDisabled]}
+                style={[styles.modalActionButton, biometricLoading && styles.modalButtonDisabled]}
                 onPress={handleEnableBiometric}
                 activeOpacity={0.8}
                 disabled={biometricLoading}
@@ -1041,6 +1070,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     width: '100%',
+  },
+  modalActionButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
   },
   modalButtonGradient: {
     padding: 16,

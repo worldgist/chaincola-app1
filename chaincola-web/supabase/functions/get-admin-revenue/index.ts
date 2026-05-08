@@ -66,14 +66,14 @@ serve(async (req) => {
       );
     }
 
-    // Check if user is admin
-    const { data: profile } = await supabase
+    // Check if user is admin (maybeSingle: no row / multiple rows → not admin)
+    const { data: profile, error: profileError } = await supabase
       .from('user_profiles')
       .select('is_admin')
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
 
-    if (!profile?.is_admin) {
+    if (profileError || !profile?.is_admin) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -149,6 +149,15 @@ serve(async (req) => {
     }
     if (params.end_date) {
       summaryQuery = summaryQuery.lte('created_at', params.end_date);
+    }
+    if (params.revenue_type) {
+      summaryQuery = summaryQuery.eq('revenue_type', params.revenue_type);
+    }
+    if (params.source) {
+      summaryQuery = summaryQuery.eq('source', params.source);
+    }
+    if (params.currency) {
+      summaryQuery = summaryQuery.eq('currency', params.currency);
     }
 
     const { data: allRevenue, error: summaryError } = await summaryQuery;

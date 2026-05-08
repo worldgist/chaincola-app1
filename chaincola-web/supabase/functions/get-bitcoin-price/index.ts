@@ -1,7 +1,12 @@
-// Get Bitcoin Live Market Price Edge Function
-// Fetches Bitcoin price using Alchemy API
+// Get Bitcoin Price Edge Function
+// Fetches live BTC token price using Alchemy Prices API
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import {
+  fetchAlchemyUsdForSymbol,
+  getAlchemyApiKey,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,7 +14,6 @@ const corsHeaders = {
 };
 
 interface PriceResponse {
-  price: number;
   price_usd: number;
   price_ngn: number;
   last_updated: string;
@@ -23,87 +27,45 @@ serve(async (req) => {
   }
 
   try {
-    // Get Alchemy API key from environment
-    // Default to the provided Bitcoin endpoint if ALCHEMY_API_KEY is not set
-    // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
-    const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
-                          Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                          'https://bitcoin-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
-    const alchemyUrl = bitcoinRpcUrl;
+    let btcPriceUsd = 0;
+    let priceSource = 'Alchemy Prices API';
+    const lastUpdated = new Date().toISOString();
 
-    // Note: Alchemy Bitcoin API is primarily for blockchain data
-    // For market prices, you may need to use a different service or calculate from blockchain data
-    // This example uses Alchemy to get blockchain data
-    
-    // Get latest block info from Alchemy Bitcoin API
-    const alchemyResponse = await fetch(alchemyUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'getbestblockhash',
-        params: [],
-        id: 1,
-      }),
-    });
-
-    if (!alchemyResponse.ok) {
-      throw new Error('Failed to fetch data from Alchemy API');
-    }
-
-    const alchemyResult = await alchemyResponse.json();
-
-    // Get block details
-    let blockData = null;
-    if (alchemyResult.result) {
-      const blockResponse = await fetch(alchemyUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'getblock',
-          params: [alchemyResult.result, 1], // Verbosity 1 for basic info
-          id: 2,
-        }),
-      });
-
-      if (blockResponse.ok) {
-        blockData = await blockResponse.json();
+    if (getAlchemyApiKey()) {
+      try {
+        console.log('📊 Fetching BTC price from Alchemy Prices API...');
+        btcPriceUsd = await fetchAlchemyUsdForSymbol('BTC');
+        if (btcPriceUsd > 0) {
+          console.log(`✅ BTC price from Alchemy: $${btcPriceUsd}`);
+        }
+      } catch (alchemyError) {
+        console.error('❌ Error fetching from Alchemy Prices API:', alchemyError);
       }
+    } else {
+      console.warn('⚠️ ALCHEMY_API_KEY not set');
+      priceSource = 'Fallback';
     }
 
-    // Note: Alchemy doesn't provide market prices directly
-    // You would need to integrate with a price API or calculate from exchange data
-    // For now, returning blockchain data structure
-    // TODO: Integrate with a price API or calculate price from exchange data
+    if (btcPriceUsd === 0) {
+      console.warn('⚠️ All price sources failed, using fallback price');
+      btcPriceUsd = 65000.0;
+      priceSource = 'Fallback';
+    }
 
-    // USD to NGN exchange rate (you may want to fetch this from an API)
-    const usdToNgn = 1650; // Default rate, should be fetched from an exchange rate API
+    const usdToNgn = await getUsdToNgnRate();
+    const btcPriceNgn = btcPriceUsd * usdToNgn;
 
-    // Placeholder price - replace with actual price fetching logic
-    // This is a structure for when you integrate a price API
     const priceData: PriceResponse = {
-      price: 0, // TODO: Fetch actual price
-      price_usd: 0, // TODO: Fetch actual price
-      price_ngn: 0, // TODO: Calculate from USD price
-      last_updated: new Date().toISOString(),
-      source: 'alchemy',
+      price_usd: btcPriceUsd,
+      price_ngn: parseFloat(btcPriceNgn.toFixed(2)),
+      last_updated: lastUpdated,
+      source: priceSource,
     };
 
     return new Response(
       JSON.stringify({
         success: true,
-        data: priceData,
-        blockchain: {
-          latest_block_hash: alchemyResult.result,
-          block_data: blockData?.result || null,
-          source: 'alchemy',
-        },
-        note: 'Alchemy API provides blockchain data, not market prices. Consider integrating a price API for live market data.',
+        price: priceData,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

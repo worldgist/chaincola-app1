@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import Navbar from '../../components/Navbar';
+import { getAppSettingsData } from '@/lib/app-settings-service';
 
 export default function ContactUsPage() {
   const { user } = useAuth();
@@ -15,11 +16,28 @@ export default function ContactUsPage() {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [supportEmail, setSupportEmail] = useState<string>('support@chaincola.app');
+  const [supportPhone, setSupportPhone] = useState<string>('+234 800 000 0000');
+  const [supportAddress, setSupportAddress] = useState<string>('');
 
   if (!user) {
     router.push('/auth/signin');
     return null;
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { settings } = await getAppSettingsData();
+      if (cancelled) return;
+      if (settings?.support_email) setSupportEmail(settings.support_email);
+      if (settings?.support_phone) setSupportPhone(settings.support_phone);
+      if (settings?.support_address) setSupportAddress(settings.support_address);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,14 +139,39 @@ export default function ContactUsPage() {
                   <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                   </svg>
-                  <span className="text-gray-700">support@chaincola.com</span>
+                  <a className="text-gray-700 hover:text-purple-700" href={`mailto:${supportEmail}`}>
+                    {supportEmail}
+                  </a>
                 </div>
                 <div className="flex items-center gap-3">
                   <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                   </svg>
-                  <span className="text-gray-700">+234 XXX XXX XXXX</span>
+                  <a className="text-gray-700 hover:text-purple-700" href={`tel:${supportPhone.replace(/[^0-9+]/g, '')}`}>
+                    {supportPhone}
+                  </a>
                 </div>
+                {supportAddress ? (
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"
+                      />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    <a
+                      className="text-gray-700 hover:text-purple-700"
+                      href={`https://maps.google.com/?q=${encodeURIComponent(supportAddress)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {supportAddress}
+                    </a>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

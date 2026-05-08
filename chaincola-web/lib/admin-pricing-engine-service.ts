@@ -8,6 +8,8 @@ export interface PricingEngineConfig {
   asset: string;
   buy_spread_percentage: number;
   sell_spread_percentage: number;
+  /** Buy vs sell wedge for app quotes: buy = sell * (1 + fraction). Example 0.052 = 5.2%. */
+  retail_markup_fraction?: number;
   override_buy_price_ngn?: number;
   override_sell_price_ngn?: number;
   trading_enabled: boolean;
@@ -27,8 +29,10 @@ export interface PricingEngineConfig {
  */
 export interface SetPricingEngineConfigRequest {
   asset: string;
-  buy_spread_percentage?: number;
-  sell_spread_percentage?: number;
+  buy_spread_percentage?: number | null;
+  sell_spread_percentage?: number | null;
+  /** Stored as decimal fraction e.g. 0.052 = 5.2% retail gap (buy vs sell inference). */
+  retail_markup_fraction?: number | null;
   override_buy_price_ngn?: number | null;
   override_sell_price_ngn?: number | null;
   trading_enabled?: boolean;
@@ -64,6 +68,10 @@ export async function getAllPricingEngineConfigs(): Promise<PricingEngineConfig[
       asset: config.asset,
       buy_spread_percentage: parseFloat(config.buy_spread_percentage.toString()),
       sell_spread_percentage: parseFloat(config.sell_spread_percentage.toString()),
+      retail_markup_fraction:
+        config.retail_markup_fraction != null
+          ? parseFloat(config.retail_markup_fraction.toString())
+          : undefined,
       override_buy_price_ngn: config.override_buy_price_ngn ? parseFloat(config.override_buy_price_ngn.toString()) : undefined,
       override_sell_price_ngn: config.override_sell_price_ngn ? parseFloat(config.override_sell_price_ngn.toString()) : undefined,
       trading_enabled: config.trading_enabled,
@@ -110,6 +118,7 @@ export async function setPricingEngineConfig(
       p_trading_enabled: request.trading_enabled !== undefined ? request.trading_enabled : null,
       p_price_frozen: request.price_frozen !== undefined ? request.price_frozen : null,
       p_notes: request.notes || null,
+      p_retail_markup_fraction: request.retail_markup_fraction !== undefined ? request.retail_markup_fraction : null,
       p_admin_user_id: user.id,
     });
 
@@ -207,6 +216,10 @@ export async function getPricingEngineConfig(
       asset: config.asset,
       buy_spread_percentage: parseFloat(config.buy_spread_percentage.toString()),
       sell_spread_percentage: parseFloat(config.sell_spread_percentage.toString()),
+      retail_markup_fraction:
+        config.retail_markup_fraction != null
+          ? parseFloat(config.retail_markup_fraction.toString())
+          : undefined,
       override_buy_price_ngn: config.override_buy_price_ngn ? parseFloat(config.override_buy_price_ngn.toString()) : undefined,
       override_sell_price_ngn: config.override_sell_price_ngn ? parseFloat(config.override_sell_price_ngn.toString()) : undefined,
       trading_enabled: config.trading_enabled,
@@ -250,6 +263,10 @@ export async function getPricingEngineConfigsBatch(
             asset: config.asset,
             buy_spread_percentage: parseFloat(config.buy_spread_percentage.toString()),
             sell_spread_percentage: parseFloat(config.sell_spread_percentage.toString()),
+            retail_markup_fraction:
+              config.retail_markup_fraction != null
+                ? parseFloat(config.retail_markup_fraction.toString())
+                : undefined,
             override_buy_price_ngn: config.override_buy_price_ngn ? parseFloat(config.override_buy_price_ngn.toString()) : undefined,
             override_sell_price_ngn: config.override_sell_price_ngn ? parseFloat(config.override_sell_price_ngn.toString()) : undefined,
             trading_enabled: config.trading_enabled,

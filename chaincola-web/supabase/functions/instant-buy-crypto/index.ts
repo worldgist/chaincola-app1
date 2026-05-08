@@ -5,6 +5,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoBuyNotification } from "../_shared/send-crypto-buy-notification.ts";
+import { assertInstantBuyAllowed } from "../_shared/treasury-trade-gates.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -32,6 +33,17 @@ const STATIC_BUY_RATES_NGN: Record<string, number> = {
   'USDT': 1_650,
   'USDC': 1_650,
   'XRP': 1_000,
+  'SOL': 250_000,
+};
+
+/** Minimum plausible NGN per 1 coin. Values below this are treated as misconfigured pricing_engine rows. */
+const MIN_SANE_BUY_RATE_NGN: Record<string, number> = {
+  'BTC': 5_000_000,
+  'ETH': 200_000,
+  'USDT': 500,
+  'USDC': 500,
+  'XRP': 20,
+  'SOL': 5_000,
 };
 
 serve(async (req) => {
@@ -103,6 +115,9 @@ serve(async (req) => {
       );
     }
 
+    const buyGate = await assertInstantBuyAllowed(supabase, assetUpper, corsHeaders);
+    if (buyGate) return buyGate;
+
     // Check max buy per transaction
     const maxBuy = MAX_BUY_PER_TRANSACTION[assetUpper];
     if (maxBuy) {
@@ -169,6 +184,17 @@ serve(async (req) => {
       );
     }
 
+    const floor = MIN_SANE_BUY_RATE_NGN[assetUpper];
+    const staticRate = STATIC_BUY_RATES_NGN[assetUpper];
+    if (floor != null && rate < floor) {
+      console.warn(
+        `⚠️ Buy rate ₦${rate} for ${assetUpper} is below sanity minimum ₦${floor} (bad admin frozen/override?). Using static fallback ₦${staticRate ?? rate}.`,
+      );
+      if (staticRate && staticRate > 0) {
+        rate = staticRate;
+      }
+    }
+
     // Get platform fee % from app_settings (admin configurable)
     let feePercentage = DEFAULT_FEE_PERCENTAGE;
     try {
@@ -218,10 +244,15 @@ serve(async (req) => {
     const result = buyResult[0];
 
     if (!result.success) {
+      let err = result.error_message || 'Buy failed';
+      if (typeof err === 'string' && err.includes('Insufficient system inventory')) {
+        err =
+          `${err} Instant buy uses treasury inventory. Ask an admin to credit system_wallets for this asset or fix pricing in Admin → Pricing.`;
+      }
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: result.error_message || 'Buy failed' 
+          error: err,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -257,7 +288,7 @@ serve(async (req) => {
         crypto_amount: parseFloat(result.crypto_amount.toString()),
         ngn_amount: ngnAmount,
         rate: rate,
-        fee_percentage: FEE_PERCENTAGE,
+        fee_percentage: feePercentage,
         balances: result.new_balances,
         transaction_id: transactionId,
       }),

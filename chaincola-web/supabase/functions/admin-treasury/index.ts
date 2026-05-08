@@ -3,6 +3,11 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  fetchAlchemyUsdPricesBySymbols,
+  getAlchemyApiKey,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -205,85 +210,124 @@ serve(async (req) => {
       }
 
       case 'getStats': {
-        // Get system wallet
-        const { data: systemWallet } = await supabase
+        const { data: systemWallet, error: systemWalletError } = await supabase
           .from('system_wallets')
           .select('*')
           .eq('id', 1)
           .single();
 
-        // Get total user balances
-        const { data: userWallets } = await supabase
+        if (systemWalletError || !systemWallet) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: systemWalletError?.message || 'System wallet not found',
+            }),
+            {
+              status: systemWalletError ? 500 : 404,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
+        }
+
+        const { data: userWallets, error: userWalletsError } = await supabase
           .from('user_wallets')
           .select('ngn_balance, btc_balance, eth_balance, usdt_balance, usdc_balance, xrp_balance, sol_balance');
 
-        // Get recent transactions
-        const { data: recentTransactions } = await supabase
+        if (userWalletsError) {
+          return new Response(
+            JSON.stringify({ success: false, error: userWalletsError.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const { data: recentTransactions, error: recentTxError } = await supabase
           .from('transactions')
           .select('*')
           .eq('transaction_type', 'SELL')
           .order('created_at', { ascending: false })
           .limit(100);
 
-        // Calculate stats
-        const totalUserNgn = userWallets?.reduce((sum, w) => sum + parseFloat(w.ngn_balance || '0'), 0) || 0;
-        
-        // Get prices for crypto inventory valuation
-        const prices: Record<string, number> = {};
-        const pairs = [
-          { pair: 'XBTNGN', symbol: 'BTC' },
-          { pair: 'ETHNGN', symbol: 'ETH' },
-          { pair: 'USDTNGN', symbol: 'USDT' },
-          { pair: 'USDCNGN', symbol: 'USDC' },
-          { pair: 'XRPNGN', symbol: 'XRP' },
-        ];
-        
-        // Fetch prices individually (Luno API doesn't support multiple pairs in one call easily)
-        for (const { pair, symbol } of pairs) {
-          try {
-            const lunoResponse = await fetch(`https://api.luno.com/api/1/ticker?pair=${pair}`);
-            if (lunoResponse.ok) {
-              const lunoData = await lunoResponse.json();
-              prices[symbol] = parseFloat(lunoData.last_trade || '0');
-            }
-          } catch (error) {
-            console.error(`Failed to fetch price for ${symbol}:`, error);
-          }
+        if (recentTxError) {
+          return new Response(
+            JSON.stringify({ success: false, error: recentTxError.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
         }
-        
-        // Fallback prices if Luno API fails
-        if (!prices['BTC']) prices['BTC'] = 95000000;
-        if (!prices['ETH']) prices['ETH'] = 3500000;
-        if (!prices['USDT']) prices['USDT'] = 1650;
-        if (!prices['USDC']) prices['USDC'] = 1650;
-        if (!prices['XRP']) prices['XRP'] = 1000;
 
-        // Calculate crypto inventory value
-        const cryptoInventoryValue = 
-          (parseFloat(systemWallet?.btc_inventory || '0') * (prices['BTC'] || 0)) +
-          (parseFloat(systemWallet?.eth_inventory || '0') * (prices['ETH'] || 0)) +
-          (parseFloat(systemWallet?.usdt_inventory || '0') * (prices['USDT'] || 1650)) +
-          (parseFloat(systemWallet?.usdc_inventory || '0') * (prices['USDC'] || 1650)) +
-          (parseFloat(systemWallet?.xrp_inventory || '0') * (prices['XRP'] || 1000)) +
-          (parseFloat(systemWallet?.sol_inventory || '0') * (prices['SOL'] || 0));
+        const totalUserNgn = (userWallets || []).reduce(
+          (sum, w) => sum + parseFloat(w.ngn_balance || '0'),
+          0
+        );
 
-        // Calculate daily sell volume
+        const pricedAssets = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'] as const;
+        const alchemyKey = getAlchemyApiKey();
+        if (!alchemyKey) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'ALCHEMY_API_KEY not set (required for live prices)' }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const usdToNgn = await getUsdToNgnRate();
+        const alchemyMap = await fetchAlchemyUsdPricesBySymbols([...pricedAssets]);
+        const prices: Record<string, number> = {};
+
+        for (const sym of pricedAssets) {
+          const row = alchemyMap.get(sym);
+          if (!row?.usd || row.usd <= 0) continue;
+          prices[sym] = row.usd * usdToNgn;
+        }
+
+        const missingPricing = pricedAssets.filter((a) => !(prices[a] > 0) || Number.isNaN(prices[a]));
+        if (missingPricing.length > 0) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: `Missing live prices for: ${missingPricing.join(', ')}. Check Alchemy Prices API availability.`,
+            }),
+            { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const cryptoInventoryValue =
+          parseFloat(systemWallet.btc_inventory || '0') * prices['BTC'] +
+          parseFloat(systemWallet.eth_inventory || '0') * prices['ETH'] +
+          parseFloat(systemWallet.usdt_inventory || '0') * prices['USDT'] +
+          parseFloat(systemWallet.usdc_inventory || '0') * prices['USDC'] +
+          parseFloat(systemWallet.xrp_inventory || '0') * prices['XRP'] +
+          parseFloat(systemWallet.sol_inventory || '0') * prices['SOL'];
+
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const { data: todaySells } = await supabase
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const { data: todaySells, error: todaySellsError } = await supabase
           .from('transactions')
           .select('fiat_amount')
           .eq('transaction_type', 'SELL')
-          .gte('created_at', today.toISOString());
+          .eq('status', 'COMPLETED')
+          .gte('created_at', today.toISOString())
+          .lt('created_at', tomorrow.toISOString());
 
-        const dailySellVolume = todaySells?.reduce((sum, t) => sum + parseFloat(t.fiat_amount || '0'), 0) || 0;
+        if (todaySellsError) {
+          return new Response(
+            JSON.stringify({ success: false, error: todaySellsError.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const dailySellVolume = (todaySells || []).reduce(
+          (sum, t) => sum + parseFloat(t.fiat_amount || '0'),
+          0
+        );
 
         const stats = {
-          total_ngn_float: parseFloat(systemWallet?.ngn_float_balance || '0'),
+          total_ngn_float: parseFloat(systemWallet.ngn_float_balance || '0'),
           total_crypto_inventory_value_ngn: cryptoInventoryValue,
           total_user_balances_ngn: totalUserNgn,
-          total_system_value: parseFloat(systemWallet?.ngn_float_balance || '0') + cryptoInventoryValue,
-          recent_transactions_count: recentTransactions?.length || 0,
+          total_system_value:
+            parseFloat(systemWallet.ngn_float_balance || '0') + cryptoInventoryValue,
+          recent_transactions_count: recentTransactions?.length ?? 0,
           daily_sell_volume: dailySellVolume,
         };
 
@@ -962,7 +1006,34 @@ serve(async (req) => {
             XRP: true,
             SOL: true,
           },
+          buying_enabled: {
+            BTC: true,
+            ETH: true,
+            USDT: true,
+            USDC: true,
+            XRP: true,
+            SOL: true,
+          },
         };
+
+        const mergeRiskSettings = (raw: Record<string, unknown>) => ({
+          minimum_ngn_reserve:
+            typeof raw.minimum_ngn_reserve === 'number' && !Number.isNaN(raw.minimum_ngn_reserve)
+              ? raw.minimum_ngn_reserve
+              : defaultSettings.minimum_ngn_reserve,
+          max_sell_limits: {
+            ...defaultSettings.max_sell_limits,
+            ...(raw.max_sell_limits as Record<string, number> | undefined),
+          },
+          selling_enabled: {
+            ...defaultSettings.selling_enabled,
+            ...(raw.selling_enabled as Record<string, boolean> | undefined),
+          },
+          buying_enabled: {
+            ...defaultSettings.buying_enabled,
+            ...(raw.buying_enabled as Record<string, boolean> | undefined),
+          },
+        });
 
         // If table doesn't exist or no settings found, return defaults
         if (settingsError) {
@@ -975,9 +1046,9 @@ serve(async (req) => {
           }
         }
 
-        // Extract risk_settings from additional_settings JSONB, or use defaults
         const additionalSettings = settings?.additional_settings || {};
-        const riskSettings = additionalSettings.risk_settings || defaultSettings;
+        const stored = (additionalSettings.risk_settings || {}) as Record<string, unknown>;
+        const riskSettings = mergeRiskSettings(stored);
 
         return new Response(
           JSON.stringify({ success: true, data: riskSettings }),
@@ -986,7 +1057,7 @@ serve(async (req) => {
       }
 
       case 'updateRiskSettings': {
-        const { minimum_ngn_reserve, max_sell_limits, selling_enabled } = body;
+        const { minimum_ngn_reserve, max_sell_limits, selling_enabled, buying_enabled } = body;
 
         // Get current additional_settings
         const { data: currentSettings } = await supabase
@@ -996,14 +1067,57 @@ serve(async (req) => {
           .single();
 
         const currentAdditionalSettings = currentSettings?.additional_settings || {};
-        
-        // Update risk_settings within additional_settings JSONB
+        const prevRisk = (currentAdditionalSettings.risk_settings || {}) as Record<string, unknown>;
+
+        const defaultBuying = {
+          BTC: true,
+          ETH: true,
+          USDT: true,
+          USDC: true,
+          XRP: true,
+          SOL: true,
+        };
+        const mergedBuying = {
+          ...defaultBuying,
+          ...(prevRisk.buying_enabled as Record<string, boolean> | undefined),
+          ...(buying_enabled as Record<string, boolean> | undefined),
+        };
+
+        const defaultSelling = { ...defaultBuying };
+        const mergedSelling = {
+          ...defaultSelling,
+          ...(prevRisk.selling_enabled as Record<string, boolean> | undefined),
+          ...(selling_enabled as Record<string, boolean> | undefined),
+        };
+
+        const defaultLimits = {
+          BTC: 0.1,
+          ETH: 1.0,
+          USDT: 10000,
+          USDC: 10000,
+          XRP: 10000,
+          SOL: 100,
+        };
+        const mergedLimits = {
+          ...defaultLimits,
+          ...(prevRisk.max_sell_limits as Record<string, number> | undefined),
+          ...(max_sell_limits as Record<string, number> | undefined),
+        };
+
+        const mergedMinimum =
+          typeof minimum_ngn_reserve === 'number' && !Number.isNaN(minimum_ngn_reserve)
+            ? minimum_ngn_reserve
+            : typeof prevRisk.minimum_ngn_reserve === 'number'
+              ? prevRisk.minimum_ngn_reserve
+              : 1000000;
+
         const updatedAdditionalSettings = {
           ...currentAdditionalSettings,
           risk_settings: {
-            minimum_ngn_reserve,
-            max_sell_limits,
-            selling_enabled,
+            minimum_ngn_reserve: mergedMinimum,
+            max_sell_limits: mergedLimits,
+            selling_enabled: mergedSelling,
+            buying_enabled: mergedBuying,
           },
         };
 
@@ -1029,7 +1143,12 @@ serve(async (req) => {
           performed_by: user.id,
           target_entity_type: 'RISK_SETTINGS',
           description: 'Updated risk settings',
-          new_value: { minimum_ngn_reserve, max_sell_limits, selling_enabled },
+          new_value: {
+            minimum_ngn_reserve: mergedMinimum,
+            max_sell_limits: mergedLimits,
+            selling_enabled: mergedSelling,
+            buying_enabled: mergedBuying,
+          },
         });
 
         return new Response(
@@ -1039,21 +1158,36 @@ serve(async (req) => {
       }
 
       case 'getEmergencyControls': {
-        const { data: settings } = await supabase
-          .from('app_settings')
+        const { data: row, error } = await supabase
+          .from('emergency_controls')
           .select('*')
-          .eq('key', 'emergency_controls')
-          .single();
+          .eq('id', 1)
+          .maybeSingle();
 
-        const defaultControls = {
-          selling_paused: false,
-          withdrawals_paused: false,
+        if (error && error.code !== 'PGRST116') {
+          return new Response(
+            JSON.stringify({ success: false, error: error.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const tradingEnabled = row?.trading_enabled ?? true;
+        const withdrawalsEnabled = row?.withdrawals_enabled ?? true;
+
+        const data = {
+          selling_paused: !tradingEnabled,
+          withdrawals_paused: !withdrawalsEnabled,
+          trading_enabled: tradingEnabled,
+          withdrawals_enabled: withdrawalsEnabled,
+          deposits_enabled: row?.deposits_enabled ?? true,
+          is_system_frozen: row?.is_system_frozen ?? false,
+          freeze_reason: row?.freeze_reason ?? null,
+          frozen_at: row?.frozen_at ?? null,
+          frozen_by: row?.frozen_by ?? null,
         };
 
-        const controls = settings?.value || defaultControls;
-
         return new Response(
-          JSON.stringify({ success: true, data: controls }),
+          JSON.stringify({ success: true, data }),
           { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -1061,38 +1195,72 @@ serve(async (req) => {
       case 'updateEmergencyControls': {
         const { control, paused, reason } = body;
 
-        // Get current controls
-        const { data: currentSettings } = await supabase
-          .from('app_settings')
-          .select('*')
-          .eq('key', 'emergency_controls')
-          .single();
+        if (control !== 'selling' && control !== 'withdrawals') {
+          return new Response(
+            JSON.stringify({ success: false, error: 'control must be "selling" or "withdrawals"' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
-        const currentControls = currentSettings?.value || {
-          selling_paused: false,
-          withdrawals_paused: false,
-        };
+        if (typeof paused !== 'boolean') {
+          return new Response(
+            JSON.stringify({ success: false, error: 'paused must be a boolean' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const { data: row } = await supabase
+          .from('emergency_controls')
+          .select('*')
+          .eq('id', 1)
+          .maybeSingle();
+
+        let tradingEnabled = row?.trading_enabled ?? true;
+        let withdrawalsEnabled = row?.withdrawals_enabled ?? true;
+
+        if (control === 'selling') {
+          tradingEnabled = !paused;
+        } else {
+          withdrawalsEnabled = !paused;
+        }
+
+        const { error: upsertError } = await supabase.from('emergency_controls').upsert(
+          {
+            id: 1,
+            is_system_frozen: row?.is_system_frozen ?? false,
+            freeze_reason: row?.freeze_reason ?? null,
+            frozen_by: row?.frozen_by ?? null,
+            frozen_at: row?.frozen_at ?? null,
+            trading_enabled: tradingEnabled,
+            withdrawals_enabled: withdrawalsEnabled,
+            deposits_enabled: row?.deposits_enabled ?? true,
+            maintenance_mode: row?.maintenance_mode ?? false,
+            maintenance_message: row?.maintenance_message ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' }
+        );
+
+        if (upsertError) {
+          return new Response(
+            JSON.stringify({ success: false, error: upsertError.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         const updatedControls = {
-          ...currentControls,
-          [control === 'selling' ? 'selling_paused' : 'withdrawals_paused']: paused,
+          selling_paused: !tradingEnabled,
+          withdrawals_paused: !withdrawalsEnabled,
+          trading_enabled: tradingEnabled,
+          withdrawals_enabled: withdrawalsEnabled,
+          deposits_enabled: row?.deposits_enabled ?? true,
+          is_system_frozen: row?.is_system_frozen ?? false,
+          freeze_reason: row?.freeze_reason ?? null,
           paused_at: paused ? new Date().toISOString() : null,
           paused_by: paused ? user.id : null,
-          pause_reason: paused ? reason : null,
+          pause_reason: paused ? (typeof reason === 'string' ? reason : null) : null,
         };
 
-        // Update emergency controls
-        await supabase
-          .from('app_settings')
-          .upsert({
-            key: 'emergency_controls',
-            value: updatedControls,
-            updated_at: new Date().toISOString(),
-          }, {
-            onConflict: 'key',
-          });
-
-        // Create audit log
         await supabase.from('audit_logs').insert({
           action_type: 'SETTINGS_CHANGED',
           performed_by: user.id,
@@ -1783,47 +1951,87 @@ serve(async (req) => {
       }
 
       case 'getMetrics': {
-        // Get system wallet
-        const { data: systemWallet } = await supabase
+        const { data: systemWallet, error: systemWalletError } = await supabase
           .from('system_wallets')
           .select('*')
           .eq('id', 1)
           .single();
 
-        if (!systemWallet) {
+        if (systemWalletError || !systemWallet) {
           return new Response(
-            JSON.stringify({ success: false, error: 'System wallet not found' }),
-            { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            JSON.stringify({
+              success: false,
+              error: systemWalletError?.message || 'System wallet not found',
+            }),
+            {
+              status: systemWalletError ? 500 : 404,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
           );
         }
 
-        // Calculate crypto inventory value in USD
-        const cryptoAssets = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'];
-        let totalCryptoValueUSD = 0;
-        
-        // Get prices (simplified - would use actual price API)
-        const prices: Record<string, number> = {
-          BTC: 43000,
-          ETH: 2500,
-          USDT: 1,
-          USDC: 1,
-          XRP: 0.6,
-          SOL: 100,
-        };
+        const cryptoAssets = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'] as const;
+        const alchemyKey = getAlchemyApiKey();
+        if (!alchemyKey) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'ALCHEMY_API_KEY not set (required for live prices)' }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
+        const usdToNgn = await getUsdToNgnRate();
+        const alchemyMap = await fetchAlchemyUsdPricesBySymbols([...cryptoAssets]);
+        const ngnPriceByAsset: Record<string, number> = {};
+        for (const sym of cryptoAssets) {
+          const row = alchemyMap.get(sym);
+          if (!row?.usd || row.usd <= 0) continue;
+          ngnPriceByAsset[sym] = row.usd * usdToNgn;
+        }
+
+        const missingPricing = cryptoAssets.filter((a) => !(ngnPriceByAsset[a] > 0) || Number.isNaN(ngnPriceByAsset[a]));
+        if (missingPricing.length > 0) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: `Missing live prices for: ${missingPricing.join(', ')}. Check Alchemy Prices API availability.`,
+            }),
+            { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        // NGN per ~1 USD
+        const ngnPerUsd = usdToNgn;
+
+        let totalCryptoValueNgn = 0;
         for (const asset of cryptoAssets) {
           const inventoryField = `${asset.toLowerCase()}_inventory`;
           const balance = parseFloat(systemWallet[inventoryField] || '0');
-          totalCryptoValueUSD += balance * (prices[asset] || 0);
+          totalCryptoValueNgn += balance * ngnPriceByAsset[asset];
         }
+        const totalCryptoValueUSD = totalCryptoValueNgn / ngnPerUsd;
 
-        // Calculate daily volume (from transactions)
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const { count: dailyTxCount } = await supabase
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const { data: dailyVolumeRows, error: dailyVolumeError } = await supabase
           .from('transactions')
-          .select('*', { count: 'exact', head: true })
-          .gte('created_at', today.toISOString());
+          .select('fiat_amount, transaction_type, status')
+          .in('transaction_type', ['BUY', 'SELL'])
+          .eq('status', 'COMPLETED')
+          .gte('created_at', today.toISOString())
+          .lt('created_at', tomorrow.toISOString());
+
+        if (dailyVolumeError) {
+          return new Response(
+            JSON.stringify({ success: false, error: dailyVolumeError.message }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const dailyVolumeProcessed = (dailyVolumeRows || []).reduce((sum, row) => {
+          return sum + parseFloat(row.fiat_amount || '0');
+        }, 0);
 
         // Calculate liquidity health index (simplified)
         const ngnFloat = parseFloat(systemWallet.ngn_float_balance || '0');
@@ -1842,7 +2050,7 @@ serve(async (req) => {
           current_ngn_float: ngnFloat,
           crypto_inventory_value_usd: totalCryptoValueUSD,
           system_health_status: systemHealthStatus,
-          daily_volume_processed: 0, // Would calculate from transactions
+          daily_volume_processed: dailyVolumeProcessed,
           liquidity_health_index: Math.round(liquidityHealthIndex),
         };
 
@@ -1867,6 +2075,16 @@ serve(async (req) => {
           );
         }
 
+        // Pull latest on-chain balances so wallet tab reflects real holdings.
+        const { data: onChainBalances } = await supabase
+          .from('on_chain_balances')
+          .select('asset, on_chain_balance')
+          .in('asset', ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL']);
+        const chainBalanceMap: Record<string, number> = {};
+        for (const row of onChainBalances || []) {
+          chainBalanceMap[row.asset] = parseFloat(row.on_chain_balance || '0');
+        }
+
         // Create wallet objects for Exodus and Trust
         const wallets: any[] = [
           {
@@ -1882,12 +2100,12 @@ serve(async (req) => {
               SOL: systemWallet.sol_main_address,
             },
             balances: {
-              BTC: 0, // Would fetch from blockchain
-              ETH: 0,
-              USDT: 0,
-              USDC: 0,
-              XRP: 0,
-              SOL: 0,
+              BTC: chainBalanceMap.BTC || 0,
+              ETH: chainBalanceMap.ETH || 0,
+              USDT: chainBalanceMap.USDT || 0,
+              USDC: chainBalanceMap.USDC || 0,
+              XRP: chainBalanceMap.XRP || 0,
+              SOL: chainBalanceMap.SOL || 0,
             },
           },
           {
@@ -1903,12 +2121,12 @@ serve(async (req) => {
               SOL: systemWallet.sol_main_address,
             },
             balances: {
-              BTC: 0,
-              ETH: 0,
-              USDT: 0,
-              USDC: 0,
-              XRP: 0,
-              SOL: 0,
+              BTC: chainBalanceMap.BTC || 0,
+              ETH: chainBalanceMap.ETH || 0,
+              USDT: chainBalanceMap.USDT || 0,
+              USDC: chainBalanceMap.USDC || 0,
+              XRP: chainBalanceMap.XRP || 0,
+              SOL: chainBalanceMap.SOL || 0,
             },
           },
         ];

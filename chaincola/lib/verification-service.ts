@@ -2,6 +2,7 @@
 // Handles user account verification status
 import { supabase } from './supabase';
 import Constants from 'expo-constants';
+import { SUPABASE_URL as FALLBACK_SUPABASE_URL } from '@/constants/supabase';
 import * as FileSystem from 'expo-file-system/legacy';
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected' | null;
@@ -410,12 +411,12 @@ export async function verifyBVNOrNIN(
       return { success: false, error: 'Not authenticated' };
     }
 
-    const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl ||
+    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                          process.env.NEXT_PUBLIC_SUPABASE_URL ||
                          process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                         'https://slleojsdpctxhlsoyenr.supabase.co';
+                         FALLBACK_SUPABASE_URL;
 
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/verify-nin`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/verify-nin`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

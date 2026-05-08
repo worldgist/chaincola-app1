@@ -22,7 +22,7 @@ serve(async (req) => {
     // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
     const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
                           Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                          'https://bitcoin-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
+                          'https://bitcoin-mainnet.g.alchemy.com/v2/rq1GQ1LbhwToT3n4E6IIB';
     const alchemyUrl = bitcoinRpcUrl;
 
     // Parse query parameters

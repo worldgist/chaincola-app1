@@ -118,6 +118,71 @@ interface TreasuryMetrics {
   liquidity_health_index: number;
 }
 
+type TreasuryRiskAsset = 'BTC' | 'ETH' | 'USDT' | 'USDC' | 'XRP' | 'SOL';
+
+interface TreasuryRiskSettings {
+  minimum_ngn_reserve: number;
+  max_sell_limits: Record<TreasuryRiskAsset, number>;
+  selling_enabled: Record<TreasuryRiskAsset, boolean>;
+  buying_enabled: Record<TreasuryRiskAsset, boolean>;
+}
+
+interface EmergencyControlsState {
+  selling_paused: boolean;
+  withdrawals_paused: boolean;
+  trading_enabled?: boolean;
+  withdrawals_enabled?: boolean;
+  deposits_enabled?: boolean;
+  is_system_frozen?: boolean;
+  freeze_reason?: string | null;
+}
+
+const TREASURY_RISK_ASSETS: TreasuryRiskAsset[] = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'];
+
+function defaultTreasuryRiskSettings(): TreasuryRiskSettings {
+  return {
+    minimum_ngn_reserve: 1_000_000,
+    max_sell_limits: {
+      BTC: 0.1,
+      ETH: 1.0,
+      USDT: 10_000,
+      USDC: 10_000,
+      XRP: 10_000,
+      SOL: 100,
+    },
+    selling_enabled: {
+      BTC: true,
+      ETH: true,
+      USDT: true,
+      USDC: true,
+      XRP: true,
+      SOL: true,
+    },
+    buying_enabled: {
+      BTC: true,
+      ETH: true,
+      USDT: true,
+      USDC: true,
+      XRP: true,
+      SOL: true,
+    },
+  };
+}
+
+function normalizeRiskSettings(raw: Partial<TreasuryRiskSettings> | null | undefined): TreasuryRiskSettings {
+  const base = defaultTreasuryRiskSettings();
+  if (!raw) return base;
+  return {
+    minimum_ngn_reserve:
+      typeof raw.minimum_ngn_reserve === 'number' && !Number.isNaN(raw.minimum_ngn_reserve)
+        ? raw.minimum_ngn_reserve
+        : base.minimum_ngn_reserve,
+    max_sell_limits: { ...base.max_sell_limits, ...raw.max_sell_limits },
+    selling_enabled: { ...base.selling_enabled, ...raw.selling_enabled },
+    buying_enabled: { ...base.buying_enabled, ...raw.buying_enabled },
+  };
+}
+
 type TabType = 
   | 'dashboard' 
   | 'wallets' 
@@ -220,6 +285,15 @@ export default function TreasuryManagementPage() {
     end_date: '',
   });
 
+  const [riskSettings, setRiskSettings] = useState<TreasuryRiskSettings>(() => defaultTreasuryRiskSettings());
+  const [riskSettingsDraft, setRiskSettingsDraft] = useState<TreasuryRiskSettings>(() => defaultTreasuryRiskSettings());
+  const [emergencyControls, setEmergencyControls] = useState<EmergencyControlsState | null>(null);
+  const [riskControlsLoading, setRiskControlsLoading] = useState(false);
+  const [riskControlsSaving, setRiskControlsSaving] = useState(false);
+  const [emergencySaving, setEmergencySaving] = useState<'selling' | 'withdrawals' | null>(null);
+  const [riskControlsError, setRiskControlsError] = useState<string | null>(null);
+  const [emergencyReason, setEmergencyReason] = useState('');
+
   useEffect(() => {
     loadInitialData();
   }, []);
@@ -237,6 +311,8 @@ export default function TreasuryManagementPage() {
       loadPricingData();
     } else if (activeTab === 'audit-logs') {
       loadAuditLogs();
+    } else if (activeTab === 'risk-controls') {
+      loadRiskControlsTab();
     }
   }, [activeTab]);
 
@@ -416,6 +492,111 @@ export default function TreasuryManagementPage() {
       }
     } catch (error) {
       console.error('Error loading audit logs:', error);
+    }
+  };
+
+  const loadRiskControlsTab = async () => {
+    setRiskControlsLoading(true);
+    setRiskControlsError(null);
+    try {
+      const [riskRes, emergencyRes] = await Promise.all([
+        fetch('/api/admin/treasury', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'getRiskSettings' }),
+        }),
+        fetch('/api/admin/treasury', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'getEmergencyControls' }),
+        }),
+      ]);
+
+      const riskJson = await riskRes.json().catch(() => ({}));
+      if (!riskRes.ok || !riskJson.success) {
+        setRiskControlsError(riskJson.error || 'Failed to load risk settings');
+      } else {
+        const normalized = normalizeRiskSettings(riskJson.data);
+        setRiskSettings(normalized);
+        setRiskSettingsDraft(normalized);
+      }
+
+      const emergencyJson = await emergencyRes.json().catch(() => ({}));
+      if (!emergencyRes.ok || !emergencyJson.success) {
+        setRiskControlsError(
+          (prev) => prev || emergencyJson.error || 'Failed to load emergency controls'
+        );
+        setEmergencyControls(null);
+      } else {
+        setEmergencyControls(emergencyJson.data as EmergencyControlsState);
+      }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : 'Failed to load risk controls';
+      setRiskControlsError(message);
+    } finally {
+      setRiskControlsLoading(false);
+    }
+  };
+
+  const saveRiskSettings = async () => {
+    setRiskControlsSaving(true);
+    setRiskControlsError(null);
+    try {
+      const response = await fetch('/api/admin/treasury', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'updateRiskSettings',
+          minimum_ngn_reserve: riskSettingsDraft.minimum_ngn_reserve,
+          max_sell_limits: riskSettingsDraft.max_sell_limits,
+          selling_enabled: riskSettingsDraft.selling_enabled,
+          buying_enabled: riskSettingsDraft.buying_enabled,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        setRiskControlsError(result.error || 'Failed to save risk settings');
+        return;
+      }
+      setRiskSettings(riskSettingsDraft);
+      alert('Risk settings saved');
+    } catch (e: unknown) {
+      setRiskControlsError(e instanceof Error ? e.message : 'Failed to save risk settings');
+    } finally {
+      setRiskControlsSaving(false);
+    }
+  };
+
+  const applyEmergencyControl = async (
+    control: 'selling' | 'withdrawals',
+    paused: boolean
+  ) => {
+    setEmergencySaving(control);
+    setRiskControlsError(null);
+    try {
+      const response = await fetch('/api/admin/treasury', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'updateEmergencyControls',
+          control,
+          paused,
+          reason: emergencyReason.trim() || undefined,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.success) {
+        setRiskControlsError(result.error || 'Failed to update emergency controls');
+        return;
+      }
+      if (result.data) {
+        setEmergencyControls(result.data as EmergencyControlsState);
+      }
+      setEmergencyReason('');
+    } catch (e: unknown) {
+      setRiskControlsError(e instanceof Error ? e.message : 'Failed to update emergency controls');
+    } finally {
+      setEmergencySaving(null);
     }
   };
 
@@ -1294,48 +1475,219 @@ export default function TreasuryManagementPage() {
           </div>
         )}
 
-        {/* Risk Controls Tab */}
+        {/* Risk Controls Tab — app_settings.additional_settings.risk_settings + emergency_controls */}
         {activeTab === 'risk-controls' && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-6">Risk Controls & Emergency Features</h2>
-              
-              <div className="space-y-6">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Buy & Sell Controls</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'] as const).map((asset) => (
-                      <div key={asset} className="p-4 border border-gray-200 rounded-lg">
-                        <h4 className="font-semibold text-gray-900 mb-3">{asset}</h4>
-                        <div className="space-y-2">
-                          <label className="flex items-center justify-between">
-                            <span className="text-sm text-gray-700">Enable Buy</span>
-                            <input type="checkbox" className="w-4 h-4" defaultChecked />
+              <h2 className="text-xl font-bold text-gray-900 mb-2">Risk Controls & Emergency Features</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                Risk limits persist on <code className="text-xs bg-gray-100 px-1 rounded">app_settings</code> (row{' '}
+                <code className="text-xs bg-gray-100 px-1 rounded">id=1</code>,{' '}
+                <code className="text-xs bg-gray-100 px-1 rounded">additional_settings.risk_settings</code>).
+                Trading / withdrawal pauses use the <code className="text-xs bg-gray-100 px-1 rounded">emergency_controls</code> table.
+              </p>
+
+              {riskControlsError && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                  {riskControlsError}
+                </div>
+              )}
+
+              {riskControlsLoading ? (
+                <p className="text-gray-600">Loading risk settings…</p>
+              ) : (
+                <div className="space-y-8">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Treasury risk (buy/sell limits)</h3>
+                    <div className="mb-4 max-w-md">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Minimum NGN float reserve
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                        value={riskSettingsDraft.minimum_ngn_reserve}
+                        onChange={(e) =>
+                          setRiskSettingsDraft((d) => ({
+                            ...d,
+                            minimum_ngn_reserve: Number(e.target.value) || 0,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {TREASURY_RISK_ASSETS.map((asset) => (
+                        <div key={asset} className="p-4 border border-gray-200 rounded-lg space-y-3">
+                          <h4 className="font-semibold text-gray-900">{asset}</h4>
+                          <label className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-gray-700">Buying enabled</span>
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 shrink-0"
+                              checked={riskSettingsDraft.buying_enabled[asset]}
+                              onChange={(e) =>
+                                setRiskSettingsDraft((d) => ({
+                                  ...d,
+                                  buying_enabled: {
+                                    ...d.buying_enabled,
+                                    [asset]: e.target.checked,
+                                  },
+                                }))
+                              }
+                            />
                           </label>
-                          <label className="flex items-center justify-between">
-                            <span className="text-sm text-gray-700">Enable Sell</span>
-                            <input type="checkbox" className="w-4 h-4" defaultChecked />
+                          <label className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-gray-700">Selling enabled</span>
+                            <input
+                              type="checkbox"
+                              className="w-4 h-4 shrink-0"
+                              checked={riskSettingsDraft.selling_enabled[asset]}
+                              onChange={(e) =>
+                                setRiskSettingsDraft((d) => ({
+                                  ...d,
+                                  selling_enabled: {
+                                    ...d.selling_enabled,
+                                    [asset]: e.target.checked,
+                                  },
+                                }))
+                              }
+                            />
                           </label>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 mb-1">
+                              Max sell limit (units)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step="any"
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                              value={riskSettingsDraft.max_sell_limits[asset]}
+                              onChange={(e) =>
+                                setRiskSettingsDraft((d) => ({
+                                  ...d,
+                                  max_sell_limits: {
+                                    ...d.max_sell_limits,
+                                    [asset]: Number(e.target.value) || 0,
+                                  },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setRiskSettingsDraft(riskSettings)}
+                        className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm hover:bg-gray-50"
+                        disabled={riskControlsSaving}
+                      >
+                        Reset
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveRiskSettings}
+                        disabled={riskControlsSaving}
+                        className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50"
+                      >
+                        {riskControlsSaving ? 'Saving…' : 'Save risk settings'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-gray-100 pt-8">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2">Emergency controls</h3>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Optional note is stored on the audit log. Pausing maps to{' '}
+                      <code className="text-xs bg-gray-100 px-1 rounded">trading_enabled</code> /{' '}
+                      <code className="text-xs bg-gray-100 px-1 rounded">withdrawals_enabled</code> on{' '}
+                      <code className="text-xs bg-gray-100 px-1 rounded">emergency_controls</code>.
+                    </p>
+                    <div className="mb-4 max-w-xl">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Note (optional, for audit when pausing)
+                      </label>
+                      <textarea
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                        rows={2}
+                        value={emergencyReason}
+                        onChange={(e) => setEmergencyReason(e.target.value)}
+                        placeholder="e.g. Incident #123 — manual pause"
+                      />
+                    </div>
+                    {emergencyControls && (
+                      <div className="flex flex-wrap gap-2 mb-4 text-sm">
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 font-medium ${
+                            emergencyControls.selling_paused
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-green-100 text-green-800'
+                          }`}
+                        >
+                          Trading: {emergencyControls.selling_paused ? 'paused' : 'active'}
+                        </span>
+                        <span
+                          className={`inline-flex items-center rounded-full px-3 py-1 font-medium ${
+                            emergencyControls.withdrawals_paused
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-green-100 text-green-800'
+                          }`}
+                        >
+                          Withdrawals: {emergencyControls.withdrawals_paused ? 'paused' : 'active'}
+                        </span>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-4 border border-gray-200 rounded-lg space-y-2">
+                        <p className="font-semibold text-gray-900">Trading (sells / trading pipeline)</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyEmergencyControl('selling', true)}
+                            disabled={emergencySaving !== null || emergencyControls?.selling_paused}
+                            className="px-3 py-2 rounded-lg border-2 border-red-300 text-red-900 text-sm hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {emergencySaving === 'selling' ? 'Updating…' : 'Pause trading'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyEmergencyControl('selling', false)}
+                            disabled={emergencySaving !== null || !emergencyControls?.selling_paused}
+                            className="px-3 py-2 rounded-lg border border-gray-300 text-gray-800 text-sm hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Resume trading
+                          </button>
                         </div>
                       </div>
-                    ))}
+                      <div className="p-4 border border-gray-200 rounded-lg space-y-2">
+                        <p className="font-semibold text-gray-900">Withdrawals</p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => applyEmergencyControl('withdrawals', true)}
+                            disabled={emergencySaving !== null || emergencyControls?.withdrawals_paused}
+                            className="px-3 py-2 rounded-lg border-2 border-red-300 text-red-900 text-sm hover:bg-red-50 disabled:opacity-50"
+                          >
+                            {emergencySaving === 'withdrawals' ? 'Updating…' : 'Pause withdrawals'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyEmergencyControl('withdrawals', false)}
+                            disabled={emergencySaving !== null || !emergencyControls?.withdrawals_paused}
+                            className="px-3 py-2 rounded-lg border border-gray-300 text-gray-800 text-sm hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            Resume withdrawals
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Emergency Freeze Options</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <button className="p-4 border-2 border-red-300 rounded-lg hover:bg-red-50 transition-colors">
-                      <p className="font-semibold text-red-900">Freeze All Trading</p>
-                      <p className="text-sm text-red-700 mt-1">Stop all buy/sell activity</p>
-                    </button>
-                    <button className="p-4 border-2 border-red-300 rounded-lg hover:bg-red-50 transition-colors">
-                      <p className="font-semibold text-red-900">Halt Withdrawals</p>
-                      <p className="text-sm text-red-700 mt-1">Prevent user fund withdrawals</p>
-                    </button>
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
@@ -2034,8 +2386,6 @@ export default function TreasuryManagementPage() {
                     }
                     const request: SetPricingEngineConfigRequest = {
                       asset: pricingRuleForm.asset,
-                      buy_spread_percentage: 0,
-                      sell_spread_percentage: 0,
                       override_buy_price_ngn: buyRate ?? null,
                       override_sell_price_ngn: sellRate ?? null,
                       trading_enabled: true,

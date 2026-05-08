@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
@@ -12,10 +12,6 @@ export default function SecurityScreen() {
   const [pinStatus, setPinStatus] = useState<boolean | null>(null);
   const [biometricEnabled, setBiometricEnabled] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchSecurityStatus();
-  }, [user?.id]);
 
   const fetchSecurityStatus = async () => {
     if (!user?.id) {
@@ -36,6 +32,12 @@ export default function SecurityScreen() {
       setLoading(false);
     }
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchSecurityStatus();
+    }, [user?.id])
+  );
 
   const handleChangePin = () => {
     router.push('/profile/change-pin');

@@ -3,6 +3,10 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  fetchAlchemyUsdForSymbol,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -40,7 +44,7 @@ serve(async (req) => {
     // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
     const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
                           Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                          'https://bitcoin-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
+                          'https://bitcoin-mainnet.g.alchemy.com/v2/rq1GQ1LbhwToT3n4E6IIB';
     const alchemyUrl = bitcoinRpcUrl;
 
     // Get user's Bitcoin wallet address
@@ -152,7 +156,7 @@ serve(async (req) => {
     }
 
     // Get Bitcoin price for fiat conversion
-    // Use a price API (you can integrate with CoinGecko, CoinMarketCap, etc.)
+    // Fiat conversion via Alchemy (USD) + FX for NGN
     const btcPriceUSD = await getBitcoinPrice('USD');
     const btcPriceNGN = await getBitcoinPrice('NGN');
 
@@ -201,29 +205,24 @@ serve(async (req) => {
   }
 });
 
-// Helper function to get Bitcoin price
 async function getBitcoinPrice(currency: string): Promise<number> {
+  const cur = currency.toUpperCase();
   try {
-    // Use CoinGecko API (free tier)
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=${currency.toLowerCase()}`
-    );
-    
-    if (response.ok) {
-      const data = await response.json();
-      return data.bitcoin?.[currency.toLowerCase()] || 0;
+    const usd = await fetchAlchemyUsdForSymbol("BTC");
+    if (usd > 0) {
+      if (cur === "USD") return usd;
+      if (cur === "NGN") return usd * (await getUsdToNgnRate());
     }
   } catch (error) {
-    console.warn('Could not fetch Bitcoin price:', error);
+    console.warn("Could not fetch Bitcoin price from Alchemy:", error);
   }
 
-  // Fallback prices (should be updated regularly)
   const fallbackPrices: Record<string, number> = {
     USD: 43000,
-    NGN: 70000000, // ~70M NGN per BTC
+    NGN: 70000000,
   };
 
-  return fallbackPrices[currency] || 0;
+  return fallbackPrices[cur] || 0;
 }
 
 

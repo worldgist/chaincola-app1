@@ -1,15 +1,17 @@
 import { supabase } from './supabase';
 import Constants from 'expo-constants';
+import { SUPABASE_ANON_KEY as DEFAULT_SUPABASE_ANON_KEY, SUPABASE_URL as DEFAULT_SUPABASE_URL } from '@/constants/supabase';
 
 // Get Supabase URL from environment
-const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl || 
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     DEFAULT_SUPABASE_URL;
 
-const SUPABASE_ANON_KEY = Constants.expoConfig?.extra?.supabaseAnonKey || 
+const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                          process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                          process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                          DEFAULT_SUPABASE_ANON_KEY;
 
 export interface CryptoWallet {
   id: string;
@@ -72,7 +74,7 @@ async function generateBTCWallet(
       };
     }
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    if (!supabaseUrl || !supabaseAnonKey) {
       return {
         success: false,
         error: 'Supabase not configured. Please check environment variables.',
@@ -81,13 +83,13 @@ async function generateBTCWallet(
 
     console.log(`💰 Generating BTC wallet on ${network}...`);
 
-    const functionUrl = `${SUPABASE_URL}/functions/v1/generate-bitcoin-wallet`;
+    const functionUrl = `${supabaseUrl}/functions/v1/generate-bitcoin-wallet`;
 
     const response = await fetch(functionUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${session.access_token}`,
-        'apikey': SUPABASE_ANON_KEY,
+        'apikey': supabaseAnonKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -149,7 +151,7 @@ async function generateSOLWallet(
       };
     }
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    if (!supabaseUrl || !supabaseAnonKey) {
       return {
         success: false,
         error: 'Supabase not configured. Please check environment variables.',
@@ -158,13 +160,13 @@ async function generateSOLWallet(
 
     console.log(`💰 Generating SOL wallet on ${network}...`);
 
-    const functionUrl = `${SUPABASE_URL}/functions/v1/generate-solana-wallet`;
+    const functionUrl = `${supabaseUrl}/functions/v1/generate-solana-wallet`;
 
     const response = await fetch(functionUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${session.access_token}`,
-        'apikey': SUPABASE_ANON_KEY,
+        'apikey': supabaseAnonKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -228,7 +230,7 @@ async function generateETHWallet(
       };
     }
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    if (!supabaseUrl || !supabaseAnonKey) {
       return {
         success: false,
         error: 'Supabase not configured. Please check environment variables.',
@@ -238,13 +240,13 @@ async function generateETHWallet(
     console.log(`💰 Generating ETH wallet on ${network} using updated ethers.js...`);
 
     // Call the dedicated ETH wallet generation function
-    const functionUrl = `${SUPABASE_URL}/functions/v1/generate-eth-wallet`;
+    const functionUrl = `${supabaseUrl}/functions/v1/generate-eth-wallet`;
 
     const response = await fetch(functionUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${session.access_token}`,
-        'apikey': SUPABASE_ANON_KEY,
+        'apikey': supabaseAnonKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -306,7 +308,7 @@ async function generateXRPWallet(
       };
     }
 
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    if (!supabaseUrl || !supabaseAnonKey) {
       return {
         success: false,
         error: 'Supabase not configured. Please check environment variables.',
@@ -315,7 +317,7 @@ async function generateXRPWallet(
 
     console.log(`💰 Generating XRP wallet on ${network}...`);
 
-    const functionUrl = `${SUPABASE_URL}/functions/v1/generate-ripple-wallet`;
+    const functionUrl = `${supabaseUrl}/functions/v1/generate-ripple-wallet`;
 
     // Add timeout to fetch (10 seconds)
     const controller = new AbortController();
@@ -326,7 +328,7 @@ async function generateXRPWallet(
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${session.access_token}`,
-          'apikey': SUPABASE_ANON_KEY,
+          'apikey': supabaseAnonKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -538,37 +540,91 @@ export async function getWalletAddress(
   }
 }
 
+function isWalletFetchRetriable(err: unknown): boolean {
+  const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: string }).name) : '';
+  const msg =
+    err && typeof err === 'object' && 'message' in err
+      ? String((err as { message?: string }).message)
+      : String(err ?? '');
+  return (
+    name === 'AbortError' ||
+    msg.includes('Aborted') ||
+    msg.includes('aborted') ||
+    msg.includes('Network request failed') ||
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('Load failed')
+  );
+}
+
+function walletFetchErrorMessage(err: unknown): string {
+  const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: string }).name) : '';
+  const msg =
+    err && typeof err === 'object' && 'message' in err
+      ? String((err as { message?: string }).message)
+      : String(err ?? '');
+  if (name === 'AbortError' || msg.includes('aborted')) {
+    return 'Request timed out. Check your connection (Expo tunnel can be slow) and try again.';
+  }
+  return msg || 'Failed to fetch wallets';
+}
+
 /**
  * Get all wallets for the current user
  */
 export async function getUserWallets(
   network: 'mainnet' | 'testnet' = 'mainnet'
 ): Promise<{ wallets: CryptoWallet[]; error: any }> {
+  const maxAttempts = 3;
+
   try {
     const { data: { session } } = await supabase.auth.getSession();
-    
+
     if (!session) {
       return { wallets: [], error: 'Not authenticated' };
     }
 
-    const { data: wallets, error } = await supabase
-      .from('crypto_wallets')
-      .select('*')
-      .eq('user_id', session.user.id)
-      .eq('network', network)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true });
+    let lastThrown: unknown = null;
 
-    if (error) {
-      console.error('❌ Error fetching user wallets:', error);
-      return { wallets: [], error };
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { data: wallets, error } = await supabase
+          .from('crypto_wallets')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .eq('network', network)
+          .eq('is_active', true)
+          .order('created_at', { ascending: true });
+
+        if (error) {
+          const code = (error as { code?: string }).code;
+          const msg = (error as { message?: string }).message || String(error);
+          console.error('❌ Error fetching user wallets:', msg, code ? `(code ${code})` : '');
+          return { wallets: [], error };
+        }
+
+        console.log(`✅ Found ${wallets?.length || 0} wallets for user`);
+        return { wallets: wallets || [], error: null };
+      } catch (e) {
+        lastThrown = e;
+        if (isWalletFetchRetriable(e) && attempt < maxAttempts) {
+          console.warn(
+            `⚠️ Wallet fetch attempt ${attempt}/${maxAttempts} failed (${walletFetchErrorMessage(e)}), retrying…`,
+          );
+          await new Promise((r) => setTimeout(r, 600 * attempt));
+          continue;
+        }
+        const friendly = walletFetchErrorMessage(e);
+        console.error('❌ Exception fetching user wallets:', friendly);
+        return { wallets: [], error: friendly };
+      }
     }
 
-    console.log(`✅ Found ${wallets?.length || 0} wallets for user`);
-    return { wallets: wallets || [], error: null };
+    return { wallets: [], error: walletFetchErrorMessage(lastThrown) };
   } catch (error: any) {
-    console.error('❌ Exception fetching user wallets:', error);
-    return { wallets: [], error: error.message || 'Failed to fetch wallets' };
+    const friendly = walletFetchErrorMessage(error);
+    console.error('❌ Exception fetching user wallets:', friendly);
+    return { wallets: [], error: friendly };
   }
 }
 

@@ -3,6 +3,10 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  fetchAlchemyUsdForSymbol,
+  getUsdToNgnRate,
+} from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -135,28 +139,24 @@ serve(async (req) => {
   }
 });
 
-// Helper function to get Ethereum price
 async function getEthereumPrice(currency: string): Promise<number> {
+  const cur = currency.toUpperCase();
   try {
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=${currency.toLowerCase()}`
-    );
-    
-    if (response.ok) {
-      const data = await response.json();
-      return data.ethereum?.[currency.toLowerCase()] || 0;
+    const usd = await fetchAlchemyUsdForSymbol("ETH");
+    if (usd > 0) {
+      if (cur === "USD") return usd;
+      if (cur === "NGN") return usd * (await getUsdToNgnRate());
     }
   } catch (error) {
-    console.warn('Could not fetch Ethereum price:', error);
+    console.warn("Could not fetch Ethereum price from Alchemy:", error);
   }
 
-  // Fallback prices
   const fallbackPrices: Record<string, number> = {
     USD: 2500,
-    NGN: 4000000, // ~4M NGN per ETH
+    NGN: 4000000,
   };
 
-  return fallbackPrices[currency] || 0;
+  return fallbackPrices[cur] || 0;
 }
 
 

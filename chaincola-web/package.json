@@ -13,10 +13,15 @@
     "check-update-sol-balance": "node scripts/check-and-update-sol-balance.js",
     "test-buy-crypto": "node scripts/test-buy-crypto.js",
     "correct-ngn-balance": "node scripts/correct-ngn-balance.js",
-    "test-sell-crypto": "node scripts/test-sell-crypto.js"
+    "test-sell-crypto": "node scripts/test-sell-crypto.js",
+    "supabase:types": "supabase gen types typescript --linked > lib/supabase/database.types.ts",
+    "import-users": "node scripts/import-users.js",
+    "migrate:supabase": "node scripts/migrate-supabase-old-to-new.js",
+    "migrate:supabase:all": "node scripts/migrate-supabase-old-to-new.js --everything --passes=2",
+    "deploy:functions": "node scripts/deploy-all-edge-functions.js",
+    "deploy:functions:dry-run": "node scripts/deploy-all-edge-functions.js --dry-run"
   },
   "dependencies": {
-    "@next/swc-darwin-x64": "^16.1.6",
     "@noble/hashes": "^2.0.1",
     "@noble/secp256k1": "^3.0.0",
     "@solana/web3.js": "^1.98.4",
@@ -50,7 +55,11 @@
     "typescript": "^5"
   },
   "optionalDependencies": {
-    "lightningcss-darwin-x64": "^1.31.1",
-    "@tailwindcss/oxide-darwin-x64": "^4"
+    "@tailwindcss/oxide-darwin-x64": "^4",
+    "lightningcss-darwin-x64": "^1.31.1"
+  },
+  "overrides": {
+    "postcss": "^8.5.10",
+    "uuid": "^14.0.0"
   }
 }

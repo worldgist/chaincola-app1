@@ -322,18 +322,17 @@ serve(async (req) => {
     // ============================================================
     
     // Get encryption key from Supabase Secrets
-    // Priority: XRP_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const encryptionKey = Deno.env.get('XRP_ENCRYPTION_KEY') ||
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+    const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                         Deno.env.get('XRP_ENCRYPTION_KEY') ||
                          Deno.env.get('ETH_ENCRYPTION_KEY');
 
     if (!encryptionKey) {
-      console.error('❌ XRP_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY not set in Supabase secrets');
-      throw new Error('Encryption key not configured. Please set XRP_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY in Supabase secrets.');
+      console.error('❌ CRYPTO_ENCRYPTION_KEY, XRP_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY not set in Supabase secrets');
+      throw new Error('Encryption key not configured. Set CRYPTO_ENCRYPTION_KEY (recommended) or XRP_ENCRYPTION_KEY in Edge Function secrets.');
     }
 
     console.log(`🔐 Encrypting XRP private key...`);
-    console.log(`   Using encryption key: ${Deno.env.get('XRP_ENCRYPTION_KEY') ? 'XRP_ENCRYPTION_KEY' : Deno.env.get('CRYPTO_ENCRYPTION_KEY') ? 'CRYPTO_ENCRYPTION_KEY' : 'ETH_ENCRYPTION_KEY'}`);
+    console.log(`   Using encryption key: ${Deno.env.get('CRYPTO_ENCRYPTION_KEY') ? 'CRYPTO_ENCRYPTION_KEY' : Deno.env.get('XRP_ENCRYPTION_KEY') ? 'XRP_ENCRYPTION_KEY' : 'ETH_ENCRYPTION_KEY'}`);
 
     let encryptedPrivateKey: string;
     try {

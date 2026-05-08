@@ -1,7 +1,14 @@
-// Crypto prices from pricing engine only (no Luno, CoinGecko, or other market APIs)
+// Live market prices via Supabase `get-luno-prices` (Alchemy + Luno) with static fallbacks.
 
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
+import {
+  applyRetailSpreadToRow,
+  extractEngineBuySell,
+  type EngineBuySellPartial,
+  retailMarkupMultiplier,
+} from './retail-pricing';
 
 /** NGN per 1 USD - used for "per USD" rate display on buy/sell screens */
 export const USD_TO_NGN_RATE = 1650;
@@ -32,6 +39,72 @@ interface CachedPrices {
 
 let priceCache: CachedPrices | null = null;
 
+async function fetchMarketPricesFromEdge(
+  symbols: string[]
+): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return { prices: {}, error: 'Supabase not configured' };
+    }
+    const normalized = symbols.map((s) => s.toUpperCase());
+    const functionUrl = `${SUPABASE_URL}/functions/v1/get-token-prices?symbols=${encodeURIComponent(normalized.join(','))}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(functionUrl, {
+      method: 'GET',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return { prices: {}, error: `Price service HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    if (!data.success || !data.prices) {
+      return { prices: {}, error: data.error || 'Price service error' };
+    }
+
+    const prices: Record<string, CryptoPrice> = {};
+    for (const symbol of Object.keys(data.prices)) {
+      const p = data.prices[symbol] as {
+        crypto_symbol?: string;
+        price_usd?: number;
+        price_ngn?: number;
+        bid?: number;
+        ask?: number;
+        last_updated?: string;
+        volume_24h?: number;
+        change_24h_pct?: number;
+      };
+      prices[symbol.toUpperCase()] = {
+        crypto_symbol: p.crypto_symbol || symbol.toUpperCase(),
+        price_usd: p.price_usd || 0,
+        price_ngn: p.price_ngn || 0,
+        bid: p.bid,
+        ask: p.ask,
+        last_updated: p.last_updated || new Date().toISOString(),
+        volume_24h: p.volume_24h,
+        source: 'alchemy',
+        change_24h_pct: p.change_24h_pct,
+      };
+    }
+    return { prices, error: null };
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      return { prices: {}, error: 'Price request timeout' };
+    }
+    return { prices: {}, error: e?.message || 'Price fetch failed' };
+  }
+}
+
 export interface CryptoPrice {
   crypto_symbol: string;
   price_usd: number;
@@ -40,7 +113,10 @@ export interface CryptoPrice {
   bid?: number;
   ask?: number;
   volume_24h?: number;
+  /** Spot source label (e.g. alchemy, static) */
   source?: string;
+  /** 24h % change when provided by price service */
+  change_24h_pct?: number;
 }
 
 export interface CryptoBalance {
@@ -54,6 +130,27 @@ export interface CryptoBalance {
  * Fetch buy/sell rates from pricing engine only (no market/Luno/crypto price).
  * Returns static rates from pricing_engine_config (override or frozen).
  */
+async function fetchPricingEngineSidesRpc(
+  symbols: string[],
+): Promise<Record<string, EngineBuySellPartial | null>> {
+  const map: Record<string, EngineBuySellPartial | null> = {};
+  await Promise.all(
+    symbols.map(async (s) => {
+      try {
+        const { data, error } = await supabase.rpc('get_pricing_engine_config', { p_asset: s });
+        if (error || !data?.length) {
+          map[s] = null;
+          return;
+        }
+        map[s] = extractEngineBuySell(data[0] as Record<string, unknown>);
+      } catch {
+        map[s] = null;
+      }
+    }),
+  );
+  return map;
+}
+
 async function getStaticRatesFromPricingEngine(symbols: string[]): Promise<Record<string, CryptoPrice>> {
   const usdToNgn = USD_TO_NGN_RATE;
   const now = new Date().toISOString();
@@ -131,12 +228,15 @@ export function getStaticCryptoRates(symbols?: string[]): { prices: Record<strin
     const symbolUpper = symbol.toUpperCase();
     const rateNgn = STATIC_CRYPTO_RATES_NGN[symbolUpper];
     if (rateNgn != null && rateNgn > 0) {
+      const mult = retailMarkupMultiplier(symbolUpper);
+      const buyNgn = rateNgn;
+      const sellNgn = buyNgn / mult;
       prices[symbolUpper] = {
         crypto_symbol: symbolUpper,
-        price_usd: rateNgn / USD_TO_NGN_RATE,
-        price_ngn: rateNgn,
-        bid: rateNgn,
-        ask: rateNgn,
+        price_usd: buyNgn / USD_TO_NGN_RATE,
+        price_ngn: buyNgn,
+        bid: sellNgn,
+        ask: buyNgn,
         last_updated: now,
         source: 'static',
       };
@@ -146,36 +246,81 @@ export function getStaticCryptoRates(symbols?: string[]): { prices: Record<strin
 }
 
 /**
- * Get crypto prices from pricing engine only (no Luno, CoinGecko, or market APIs).
+ * Get crypto market prices (edge function, then fallbacks).
  */
 export async function getCryptoPrices(): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
   return getLunoPrices(SUPPORTED_SYMBOLS);
 }
 
 /**
- * Fetch prices from pricing engine only (static rates).
- * No Luno, CoinGecko, or other market API calls.
+ * Live market prices: Supabase edge (Alchemy/Luno) → pricing engine → static constants.
  */
 export async function getLunoPrices(symbols?: string[]): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
   try {
-    const symbolsToUse = symbols || SUPPORTED_SYMBOLS;
+    const symbolsToUse = (symbols || SUPPORTED_SYMBOLS).map((s) => s.toUpperCase());
+
     if (priceCache && Date.now() - priceCache.timestamp < CACHE_DURATION_MS) {
       const cached: Record<string, CryptoPrice> = {};
-      for (const sym of symbolsToUse) {
-        const s = sym.toUpperCase();
-        if (priceCache.prices[s]) cached[s] = priceCache.prices[s];
+      let allHit = true;
+      for (const s of symbolsToUse) {
+        if (priceCache.prices[s]) {
+          cached[s] = priceCache.prices[s];
+        } else {
+          allHit = false;
+          break;
+        }
       }
-      if (Object.keys(cached).length > 0) return { prices: cached, error: null };
+      if (allHit) {
+        return { prices: cached, error: null };
+      }
     }
-    const prices = await getStaticRatesFromPricingEngine(symbolsToUse);
+
+    const merged: Record<string, CryptoPrice> = {};
+
+    const edge = await fetchMarketPricesFromEdge(symbolsToUse);
+    if (edge.prices && Object.keys(edge.prices).length > 0) {
+      Object.assign(merged, edge.prices);
+    }
+
+    const missingAfterEdge = symbolsToUse.filter(
+      (s) => !merged[s] || !merged[s].price_usd || merged[s].price_usd <= 0
+    );
+    if (missingAfterEdge.length > 0) {
+      const staticEngine = await getStaticRatesFromPricingEngine(missingAfterEdge);
+      Object.assign(merged, staticEngine);
+    }
+
+    const missingAfterStatic = symbolsToUse.filter(
+      (s) => !merged[s] || !merged[s].price_usd || merged[s].price_usd <= 0
+    );
+    if (missingAfterStatic.length > 0) {
+      const { prices: hardcoded } = getStaticCryptoRates(missingAfterStatic);
+      Object.assign(merged, hardcoded);
+    }
+
+    const engineSides = await fetchPricingEngineSidesRpc(symbolsToUse);
+
+    const out: Record<string, CryptoPrice> = {};
+    for (const s of symbolsToUse) {
+      if (!merged[s]) continue;
+      const normalized = applyRetailSpreadToRow(merged[s], engineSides[s] ?? null, s) as CryptoPrice;
+      out[s] = normalized;
+    }
+
     if (!priceCache) priceCache = { prices: {}, timestamp: 0 };
-    priceCache.prices = { ...priceCache.prices, ...prices };
+    priceCache.prices = { ...priceCache.prices, ...out };
     priceCache.timestamp = Date.now();
-    return { prices, error: null };
+
+    return { prices: out, error: null };
   } catch (error: any) {
-    console.error('❌ Error fetching static rates:', error);
+    console.error('❌ Error fetching market prices:', error);
     if (priceCache?.prices && Object.keys(priceCache.prices).length > 0) {
-      return { prices: priceCache.prices, error: null };
+      const symbolsToUse = (symbols || SUPPORTED_SYMBOLS).map((s) => s.toUpperCase());
+      const fallback: Record<string, CryptoPrice> = {};
+      for (const s of symbolsToUse) {
+        if (priceCache.prices[s]) fallback[s] = priceCache.prices[s];
+      }
+      if (Object.keys(fallback).length > 0) return { prices: fallback, error: null };
     }
     return { prices: {}, error: error?.message || 'Failed to fetch prices' };
   }
@@ -313,18 +458,11 @@ export async function getUserCryptoBalances(userId: string): Promise<{ balances:
       }
     }
 
-    // Fetch prices from pricing engine (static rates)
-    // Prices are optional - balances are returned even if prices fail
+    // Live prices (do not race with an empty timeout — that often wins and drops real prices)
     try {
       const allCurrencies = Object.keys(balances);
-      const pricePromise = getLunoPrices(allCurrencies);
-      const PRICE_FETCH_TIMEOUT_MS = 12000;
-      const priceTimeout = new Promise<{ prices: Record<string, CryptoPrice>; error: any }>((resolve) => 
-        setTimeout(() => resolve({ prices: {}, error: null }), PRICE_FETCH_TIMEOUT_MS)
-      );
+      const priceResult = await getLunoPrices(allCurrencies);
 
-      const priceResult = await Promise.race([pricePromise, priceTimeout]);
-      
       if (priceResult.prices && Object.keys(priceResult.prices).length > 0 && !priceResult.error) {
         for (const symbol of Object.keys(balances)) {
           const balance = balances[symbol];
@@ -426,12 +564,13 @@ export async function syncSolBalanceFromBlockchain(userId: string): Promise<{ su
 
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                       process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       process.env.EXPO_PUBLIC_SUPABASE_URL ||
+                       SUPABASE_URL;
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     // Get session for authentication
     const { data: { session } } = await supabase.auth.getSession();
@@ -497,11 +636,13 @@ export async function creditSolDepositTransaction(
 
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       process.env.EXPO_PUBLIC_SUPABASE_URL ||
+                       SUPABASE_URL;
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     // Get session for authentication
     const { data: { session } } = await supabase.auth.getSession();

@@ -1,37 +1,56 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { 
-  getAllPricingEngineConfigs, 
-  setPricingEngineConfig, 
+import { getMarketSpotPrices, type CryptoPrice } from '@/lib/crypto-price-service';
+import {
+  getAllPricingEngineConfigs,
+  setPricingEngineConfig,
   freezePricingGlobally,
-  type PricingEngineConfig, 
-  type SetPricingEngineConfigRequest 
+  type PricingEngineConfig,
+  type SetPricingEngineConfigRequest,
 } from '@/lib/admin-pricing-engine-service';
+import {
+  PRICING_ASSET_REFERENCE,
+  getPricingReference,
+  validatePricingRates,
+  resolveEffectiveBuyNgn,
+  resolveEffectiveSellNgn,
+} from '@/lib/pricing-engine-reference';
+import { appSettingsApi, type AppSettings } from '@/lib/admin-api';
 
 interface ConfigFormData {
   asset: string;
   buy_rate_ngn: string;
   sell_rate_ngn: string;
+  /** Percent (e.g. 5.2) → stored as fraction in DB */
+  retail_markup_percent: string;
+  /** Reserved market skew vs mid, percent */
+  market_buy_spread_percent: string;
+  market_sell_spread_percent: string;
   trading_enabled: boolean;
   price_frozen: boolean;
   notes: string;
 }
 
-const ASSET_OPTIONS = [
-  { symbol: 'BTC', name: 'Bitcoin' },
-  { symbol: 'ETH', name: 'Ethereum' },
-  { symbol: 'USDT', name: 'Tether' },
-  { symbol: 'USDC', name: 'USD Coin' },
-  { symbol: 'XRP', name: 'Ripple' },
-  { symbol: 'SOL', name: 'Solana' },
-  { symbol: 'TRX', name: 'Tron' },
-];
+const STABLE_ASSETS = new Set(['USDT', 'USDC']);
+
+function defaultRetailFraction(symbol: string): number {
+  return STABLE_ASSETS.has(symbol.toUpperCase()) ? 0.003 : 0.052;
+}
+
+function fractionToPercentField(fraction: number | undefined | null, symbol: string): string {
+  const f = fraction != null && Number.isFinite(fraction) ? fraction : defaultRetailFraction(symbol);
+  const pct = f * 100;
+  return pct < 0.01 ? pct.toFixed(4) : pct.toFixed(2);
+}
+
+const ASSET_OPTIONS = PRICING_ASSET_REFERENCE.map((r) => ({ symbol: r.symbol, name: r.name }));
+
+/** Symbols supported by `get-luno-prices` — same set as pricing engine assets */
+const MARKET_SYMBOLS = PRICING_ASSET_REFERENCE.map((r) => r.symbol);
 
 export default function PricingEnginePage() {
-  const router = useRouter();
   const [configs, setConfigs] = useState<PricingEngineConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -40,17 +59,62 @@ export default function PricingEnginePage() {
   const [editingConfig, setEditingConfig] = useState<PricingEngineConfig | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [globalFreezeLoading, setGlobalFreezeLoading] = useState(false);
+  const [seedLoading, setSeedLoading] = useState(false);
+  const [marketPrices, setMarketPrices] = useState<Record<string, CryptoPrice>>({});
+  const [marketLoading, setMarketLoading] = useState(false);
+  const [marketError, setMarketError] = useState<string | null>(null);
+  const [marketFetchedAt, setMarketFetchedAt] = useState<string | null>(null);
+  const [feeSettings, setFeeSettings] = useState<Pick<AppSettings, 'transaction_fee'> | null>(null);
   const [formData, setFormData] = useState<ConfigFormData>({
     asset: '',
     buy_rate_ngn: '',
     sell_rate_ngn: '',
+    retail_markup_percent: '',
+    market_buy_spread_percent: '',
+    market_sell_spread_percent: '',
     trading_enabled: true,
     price_frozen: false,
     notes: '',
   });
 
+  const fetchMarketPrices = useCallback(async () => {
+    setMarketLoading(true);
+    setMarketError(null);
+    try {
+      const { prices, error } = await getMarketSpotPrices(MARKET_SYMBOLS, { timeoutMs: 25_000 });
+      if (error) {
+        setMarketError(error);
+        setMarketPrices(prices);
+      } else {
+        setMarketPrices(prices);
+      }
+      setMarketFetchedAt(new Date().toISOString());
+    } catch (e: any) {
+      setMarketError(e?.message || 'Failed to load market prices');
+    } finally {
+      setMarketLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchConfigs();
+  }, []);
+
+  useEffect(() => {
+    fetchMarketPrices();
+  }, [fetchMarketPrices]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await appSettingsApi.getAppSettings();
+      if (!cancelled && res.success && res.data) {
+        setFeeSettings({ transaction_fee: res.data.transaction_fee });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const fetchConfigs = async () => {
@@ -77,6 +141,9 @@ export default function PricingEnginePage() {
       asset: config.asset,
       buy_rate_ngn: config.override_buy_price_ngn != null ? config.override_buy_price_ngn.toString() : '',
       sell_rate_ngn: config.override_sell_price_ngn != null ? config.override_sell_price_ngn.toString() : '',
+      retail_markup_percent: fractionToPercentField(config.retail_markup_fraction, config.asset),
+      market_buy_spread_percent: (config.buy_spread_percentage * 100).toFixed(2),
+      market_sell_spread_percent: (config.sell_spread_percentage * 100).toFixed(2),
       trading_enabled: config.trading_enabled,
       price_frozen: config.price_frozen,
       notes: config.notes || '',
@@ -93,6 +160,9 @@ export default function PricingEnginePage() {
       asset: '',
       buy_rate_ngn: '',
       sell_rate_ngn: '',
+      retail_markup_percent: '',
+      market_buy_spread_percent: '',
+      market_sell_spread_percent: '',
       trading_enabled: true,
       price_frozen: false,
       notes: '',
@@ -135,16 +205,60 @@ export default function PricingEnginePage() {
         }
       }
 
+      const validationError = validatePricingRates(formData.asset, buyRate, sellRate);
+      if (validationError) {
+        setError(validationError);
+        setSaving(false);
+        return;
+      }
+
+      const retailPctRaw = formData.retail_markup_percent.trim();
+      let retailFrac: number | undefined;
+      if (retailPctRaw) {
+        const p = parseFloat(retailPctRaw);
+        if (isNaN(p) || p < 0 || p > 50) {
+          setError('Retail margin % must be between 0 and 50 (buy vs sell wedge for in-app quotes).');
+          setSaving(false);
+          return;
+        }
+        retailFrac = p / 100;
+      }
+
+      const buySkewRaw = formData.market_buy_spread_percent.trim();
+      let buySkewFrac: number | undefined;
+      if (buySkewRaw) {
+        const p = parseFloat(buySkewRaw);
+        if (isNaN(p) || p < 0 || p > 100) {
+          setError('Market buy skew % must be between 0 and 100.');
+          setSaving(false);
+          return;
+        }
+        buySkewFrac = p / 100;
+      }
+
+      const sellSkewRaw = formData.market_sell_spread_percent.trim();
+      let sellSkewFrac: number | undefined;
+      if (sellSkewRaw) {
+        const p = parseFloat(sellSkewRaw);
+        if (isNaN(p) || p < 0 || p > 100) {
+          setError('Market sell skew % must be between 0 and 100.');
+          setSaving(false);
+          return;
+        }
+        sellSkewFrac = p / 100;
+      }
+
       const request: SetPricingEngineConfigRequest = {
         asset: formData.asset,
-        buy_spread_percentage: 0,
-        sell_spread_percentage: 0,
         override_buy_price_ngn: buyRate,
         override_sell_price_ngn: sellRate,
         trading_enabled: formData.trading_enabled,
         price_frozen: formData.price_frozen,
         notes: formData.notes || undefined,
       };
+      if (retailFrac !== undefined) request.retail_markup_fraction = retailFrac;
+      if (buySkewFrac !== undefined) request.buy_spread_percentage = buySkewFrac;
+      if (sellSkewFrac !== undefined) request.sell_spread_percentage = sellSkewFrac;
 
       const result = await setPricingEngineConfig(request);
 
@@ -156,6 +270,9 @@ export default function PricingEnginePage() {
           asset: '',
           buy_rate_ngn: '',
           sell_rate_ngn: '',
+          retail_markup_percent: '',
+          market_buy_spread_percent: '',
+          market_sell_spread_percent: '',
           trading_enabled: true,
           price_frozen: false,
           notes: '',
@@ -170,6 +287,51 @@ export default function PricingEnginePage() {
       setError(err.message || 'Failed to save configuration');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSeedRecommendedRates = async () => {
+    if (
+      !confirm(
+        'This will set Buy/Sell NGN prices for BTC, ETH, USDT, USDC, XRP, SOL, and TRX to the built-in recommended values (~market placeholders). Existing overrides for those assets will be replaced. Continue?',
+      )
+    ) {
+      return;
+    }
+    setSeedLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      for (const row of PRICING_ASSET_REFERENCE) {
+        const err = validatePricingRates(row.symbol, row.buyNgn, row.sellNgn);
+        if (err) {
+          setError(err);
+          setSeedLoading(false);
+          return;
+        }
+        const seedFrac = Math.min(0.5, Math.max(0, row.buyNgn / row.sellNgn - 1));
+        const result = await setPricingEngineConfig({
+          asset: row.symbol,
+          override_buy_price_ngn: row.buyNgn,
+          override_sell_price_ngn: row.sellNgn,
+          retail_markup_fraction: seedFrac,
+          trading_enabled: true,
+          price_frozen: false,
+          notes: 'Recommended reference rates (admin seed)',
+        });
+        if (!result.success) {
+          setError(`${row.symbol}: ${result.error || 'save failed'}`);
+          setSeedLoading(false);
+          return;
+        }
+      }
+      setSuccess('All assets updated with recommended NGN buy/sell rates.');
+      await fetchConfigs();
+      setTimeout(() => setSuccess(null), 4000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to seed rates');
+    } finally {
+      setSeedLoading(false);
     }
   };
 
@@ -209,6 +371,21 @@ export default function PricingEnginePage() {
     }).format(value);
   };
 
+  const formatUsd = (value: number) =>
+    new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+
+  const formatCompactNgn = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return '—';
+    if (value >= 1_000_000) return `₦${(value / 1_000_000).toFixed(2)}M`;
+    if (value >= 10_000) return `₦${(value / 1_000).toFixed(1)}k`;
+    return formatCurrency(value);
+  };
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString('en-US', {
       year: 'numeric',
@@ -229,15 +406,26 @@ export default function PricingEnginePage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Pricing Engine Management</h1>
-              <p className="mt-1 text-sm text-gray-500">Set buy and sell NGN rates per asset, enable/disable trading, and freeze prices</p>
+              <p className="mt-1 text-sm text-gray-500">
+                Set <strong className="font-medium text-gray-700">NGN per 1 full coin</strong> for instant buy/sell —
+                totals must match asset scale (e.g. BTC is millions of ₦, not ~1 500).
+              </p>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-4">
               <Link
                 href="/admin/dashboard"
                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
               >
                 Back to Dashboard
               </Link>
+              <button
+                type="button"
+                onClick={handleSeedRecommendedRates}
+                disabled={seedLoading || saving}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-md hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {seedLoading ? 'Applying…' : 'Apply recommended rates (all assets)'}
+              </button>
               {isGlobalFreezeActive ? (
                 <button
                   onClick={() => handleGlobalFreeze(false)}
@@ -257,7 +445,24 @@ export default function PricingEnginePage() {
               )}
               {!showAddForm && (
                 <button
-                  onClick={() => setShowAddForm(true)}
+                  type="button"
+                  onClick={() => {
+                    setEditingConfig(null);
+                    setFormData({
+                      asset: '',
+                      buy_rate_ngn: '',
+                      sell_rate_ngn: '',
+                      retail_markup_percent: '',
+                      market_buy_spread_percent: '',
+                      market_sell_spread_percent: '',
+                      trading_enabled: true,
+                      price_frozen: false,
+                      notes: '',
+                    });
+                    setShowAddForm(true);
+                    setError(null);
+                    setSuccess(null);
+                  }}
                   className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700"
                 >
                   Add New Configuration
@@ -280,6 +485,144 @@ export default function PricingEnginePage() {
             {success}
           </div>
         )}
+
+        {feeSettings && (
+          <div className="mb-8 bg-slate-50 border border-slate-200 rounded-lg shadow-sm p-5 flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-2xl">
+              <h2 className="text-sm font-semibold text-slate-900">Platform transaction fee</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Global flat fee (currently {feeSettings.transaction_fee}) is separate from per-asset NGN rates and
+                retail margin. Change it under app settings.
+              </p>
+            </div>
+            <Link
+              href="/admin/settings"
+              className="shrink-0 text-sm font-medium text-purple-700 hover:text-purple-900"
+            >
+              Open Settings →
+            </Link>
+          </div>
+        )}
+
+        <div className="mb-8 bg-white border border-gray-200 rounded-lg shadow-sm p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">How pricing works</h2>
+          <ul className="text-sm text-gray-600 space-y-2 list-disc pl-5">
+            <li>
+              <strong className="text-gray-800">Unit</strong> — All NGN amounts are per <strong>1 full coin</strong>{' '}
+              (1 BTC, 1 ETH, not “per kobo”). Wrong scale breaks instant buy.
+            </li>
+            <li>
+              <strong className="text-gray-800">Buy / sell overrides</strong> — Instant buy and wallet display use the{' '}
+              <em>buy</em> side; sells use the <em>sell</em> side. Buy should be higher than sell.
+            </li>
+            <li>
+              <strong className="text-gray-800">Retail margin %</strong> — When only one override is set, or when merging
+              live bids/asks, we apply this wedge (~5.2% majors, ~0.3% USDT/USDC by default). You can tune it per asset
+              here; it is stored as a fraction on the row.
+            </li>
+            <li>
+              <strong className="text-gray-800">Market skew %</strong> — Reserved for mid-based quoting (fraction of price).
+              Stored for future pipelines; overrides still win for instant flows today.
+            </li>
+            <li>
+              <strong className="text-gray-800">Resolution order</strong> — Override prices → frozen snapshot (if freeze
+              on) → server defaults / seed. Inventory in <code className="text-xs bg-gray-100 px-1 rounded">system_wallets</code>{' '}
+              still gates instant buy.
+            </li>
+          </ul>
+        </div>
+
+        <div className="mb-8 bg-white border border-emerald-200 rounded-lg shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-emerald-100 bg-emerald-50/80 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Live market reference</h2>
+              <p className="text-sm text-gray-600 mt-0.5">
+                Spot-style NGN per 1 coin from the price service (not your admin overrides).
+                {marketFetchedAt && (
+                  <span className="ml-2 text-gray-500">
+                    Updated {formatDate(marketFetchedAt)}
+                  </span>
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => fetchMarketPrices()}
+              disabled={marketLoading}
+              className="px-4 py-2 text-sm font-medium text-emerald-800 bg-white border border-emerald-300 rounded-md hover:bg-emerald-50 disabled:opacity-50"
+            >
+              {marketLoading ? 'Refreshing…' : 'Refresh market'}
+            </button>
+          </div>
+          {marketError && (
+            <div className="mx-6 mt-4 text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded px-3 py-2">
+              Partial or failed fetch: {marketError}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Asset</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Mid ₦</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Bid ₦</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ask ₦</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Spot USD</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Quote time</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Admin buy vs ask</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {MARKET_SYMBOLS.map((sym) => {
+                  const row = marketPrices[sym];
+                  const cfg = configs.find((c) => c.asset === sym);
+                  const adminBuy = cfg ? resolveEffectiveBuyNgn(cfg) : null;
+                  const bid = row?.bid;
+                  const ask = row?.ask;
+                  const mid = row?.price_ngn;
+                  let versus = '—';
+                  if (adminBuy != null && ask != null && ask > 0) {
+                    const pct = ((adminBuy - ask) / ask) * 100;
+                    versus =
+                      pct === 0
+                        ? 'Matches ask'
+                        : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}% vs ask`;
+                  } else if (adminBuy != null && mid != null && mid > 0) {
+                    const pct = ((adminBuy - mid) / mid) * 100;
+                    versus = `${pct > 0 ? '+' : ''}${pct.toFixed(2)}% vs mid`;
+                  } else if (adminBuy != null && !row) {
+                    versus = 'No market row';
+                  }
+                  return (
+                    <tr key={sym}>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">{sym}</td>
+                      <td className="px-4 py-3 text-sm text-gray-800 whitespace-nowrap" title={mid ? String(mid) : ''}>
+                        {mid != null && mid > 0 ? formatCompactNgn(mid) : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap" title={bid != null ? String(bid) : ''}>
+                        {bid != null && bid > 0 ? formatCompactNgn(bid) : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap" title={ask != null ? String(ask) : ''}>
+                        {ask != null && ask > 0 ? formatCompactNgn(ask) : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap">
+                        {row?.price_usd != null && row.price_usd > 0 ? formatUsd(row.price_usd) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap max-w-[9rem]">
+                        {row?.last_updated ? formatDate(row.last_updated) : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700 whitespace-nowrap" title="Effective admin buy vs market ask (or mid if no ask)">
+                        {versus}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
         {/* Global Freeze Warning */}
         {isGlobalFreezeActive && (
@@ -319,6 +662,11 @@ export default function PricingEnginePage() {
                       </option>
                     ))}
                   </select>
+                  {formData.asset && getPricingReference(formData.asset) && (
+                    <p className="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded px-2 py-1.5">
+                      {getPricingReference(formData.asset)!.unitHint}
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -339,37 +687,177 @@ export default function PricingEnginePage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Buy Rate (NGN per unit)
-                  </label>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Buy price (₦ per 1 {formData.asset || 'coin'})
+                    </label>
+                    {formData.asset && getPricingReference(formData.asset) && (
+                      <button
+                        type="button"
+                        className="text-xs text-indigo-600 hover:text-indigo-800 font-medium shrink-0"
+                        onClick={() => {
+                          const r = getPricingReference(formData.asset);
+                          if (!r) return;
+                          const frac = Math.min(0.5, Math.max(0, r.buyNgn / r.sellNgn - 1));
+                          setFormData((prev) => ({
+                            ...prev,
+                            buy_rate_ngn: String(r.buyNgn),
+                            sell_rate_ngn: String(r.sellNgn),
+                            retail_markup_percent: fractionToPercentField(frac, formData.asset),
+                          }));
+                        }}
+                      >
+                        Fill suggested
+                      </button>
+                    )}
+                  </div>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={formData.buy_rate_ngn}
                     onChange={(e) => handleInputChange('buy_rate_ngn', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="e.g. 1520 (leave empty for market)"
+                    placeholder={
+                      formData.asset && getPricingReference(formData.asset)
+                        ? `e.g. ${getPricingReference(formData.asset)!.buyNgn.toLocaleString('en-NG')}`
+                        : 'Select asset first'
+                    }
                   />
-                  <p className="mt-1 text-xs text-gray-500">NGN rate when users buy this asset</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Override used by instant buy. Leave empty only if you rely on freeze snapshot or server defaults.
+                  </p>
                 </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Sell Rate (NGN per unit)
+                    Sell price (₦ per 1 {formData.asset || 'coin'})
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={formData.sell_rate_ngn}
                     onChange={(e) => handleInputChange('sell_rate_ngn', e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    placeholder="e.g. 1480 (leave empty for market)"
+                    placeholder={
+                      formData.asset && getPricingReference(formData.asset)
+                        ? `e.g. ${getPricingReference(formData.asset)!.sellNgn.toLocaleString('en-NG')}`
+                        : 'Select asset first'
+                    }
                   />
-                  <p className="mt-1 text-xs text-gray-500">NGN rate when users sell this asset</p>
+                  <p className="mt-1 text-xs text-gray-500">Used when users sell; usually slightly below buy.</p>
                 </div>
+              </div>
 
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50/80 space-y-4">
+                <h3 className="text-sm font-semibold text-gray-900">Spread and margin</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Retail margin (%)
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max="50"
+                      value={formData.retail_markup_percent}
+                      onChange={(e) => handleInputChange('retail_markup_percent', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder={
+                        formData.asset
+                          ? `default ~${(defaultRetailFraction(formData.asset) * 100).toFixed(2)}%`
+                          : 'Select asset'
+                      }
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Buy vs sell gap when one side is inferred (empty = DB default on new row; unchanged field omitted on save).
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Market buy skew (%)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="100"
+                      value={formData.market_buy_spread_percent}
+                      onChange={(e) => handleInputChange('market_buy_spread_percent', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="e.g. 1 = 1%"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Stored as decimal; reserved for mid-based routing.</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Market sell skew (%)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="100"
+                      value={formData.market_sell_spread_percent}
+                      onChange={(e) => handleInputChange('market_sell_spread_percent', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                      placeholder="e.g. 1 = 1%"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                    onClick={() => {
+                      const buy = parseFloat(formData.buy_rate_ngn);
+                      if (!formData.buy_rate_ngn.trim() || isNaN(buy) || buy <= 0) {
+                        setError('Set a valid buy price first.');
+                        return;
+                      }
+                      const sym = formData.asset || 'BTC';
+                      const raw = formData.retail_markup_percent.trim();
+                      const pct = raw ? parseFloat(raw) : defaultRetailFraction(sym) * 100;
+                      if (isNaN(pct) || pct < 0 || pct > 50) {
+                        setError('Retail margin % must be between 0 and 50.');
+                        return;
+                      }
+                      const sell = buy / (1 + pct / 100);
+                      setError(null);
+                      setFormData((prev) => ({ ...prev, sell_rate_ngn: sell.toFixed(4) }));
+                    }}
+                  >
+                    Derive sell from buy + margin
+                  </button>
+                  <button
+                    type="button"
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                    onClick={() => {
+                      const sell = parseFloat(formData.sell_rate_ngn);
+                      if (!formData.sell_rate_ngn.trim() || isNaN(sell) || sell <= 0) {
+                        setError('Set a valid sell price first.');
+                        return;
+                      }
+                      const sym = formData.asset || 'BTC';
+                      const raw = formData.retail_markup_percent.trim();
+                      const pct = raw ? parseFloat(raw) : defaultRetailFraction(sym) * 100;
+                      if (isNaN(pct) || pct < 0 || pct > 50) {
+                        setError('Retail margin % must be between 0 and 50.');
+                        return;
+                      }
+                      const buy = sell * (1 + pct / 100);
+                      setError(null);
+                      setFormData((prev) => ({ ...prev, buy_rate_ngn: buy.toFixed(4) }));
+                    }}
+                  >
+                    Derive buy from sell + margin
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Freeze Price for This Asset
@@ -385,7 +873,10 @@ export default function PricingEnginePage() {
                       {formData.price_frozen ? 'Price Frozen' : 'Price Active'}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500">Freeze this asset's price (use last known price)</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    When frozen, instant buy prefers <strong>frozen_*</strong> snapshot over server defaults if no
+                    override is set. Set overrides first, then enable freeze to lock them in.
+                  </p>
                 </div>
               </div>
 
@@ -446,10 +937,22 @@ export default function PricingEnginePage() {
                       Asset
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Buy Rate (NGN)
+                      Effective buy ₦
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Sell Rate (NGN)
+                      Effective sell ₦
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Retail margin
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Market skew
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Stored override
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Frozen snapshot
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Trading
@@ -473,17 +976,75 @@ export default function PricingEnginePage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">
-                          {config.override_buy_price_ngn != null
-                            ? formatCurrency(config.override_buy_price_ngn)
-                            : <span className="text-gray-400">—</span>}
+                          {resolveEffectiveBuyNgn(config) != null ? (
+                            formatCurrency(resolveEffectiveBuyNgn(config)!)
+                          ) : (
+                            <span className="text-gray-400 italic" title="No override/frozen snapshot — instant buy uses built-in static default">
+                              Built-in default
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-900">
-                          {config.override_sell_price_ngn != null
-                            ? formatCurrency(config.override_sell_price_ngn)
-                            : <span className="text-gray-400">—</span>}
+                          {resolveEffectiveSellNgn(config) != null ? (
+                            formatCurrency(resolveEffectiveSellNgn(config)!)
+                          ) : (
+                            <span className="text-gray-400 italic" title="No override/frozen snapshot">
+                              Built-in default
+                            </span>
+                          )}
                         </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
+                        {(
+                          (config.retail_markup_fraction ?? defaultRetailFraction(config.asset)) * 100
+                        ).toFixed(2)}
+                        %
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        <span title="Buy spread / sell spread vs mid (stored as fractions)">
+                          {(config.buy_spread_percentage * 100).toFixed(2)}% /{' '}
+                          {(config.sell_spread_percentage * 100).toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        <div>
+                          Buy:{' '}
+                          {config.override_buy_price_ngn != null ? (
+                            formatCurrency(config.override_buy_price_ngn)
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </div>
+                        <div className="text-xs mt-0.5">
+                          Sell:{' '}
+                          {config.override_sell_price_ngn != null ? (
+                            formatCurrency(config.override_sell_price_ngn)
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600 max-w-[10rem]">
+                        {config.price_frozen || config.frozen_buy_price_ngn || config.frozen_sell_price_ngn ? (
+                          <div className="text-xs space-y-0.5">
+                            <div>
+                              Buy:{' '}
+                              {config.frozen_buy_price_ngn != null
+                                ? formatCurrency(config.frozen_buy_price_ngn)
+                                : '—'}
+                            </div>
+                            <div>
+                              Sell:{' '}
+                              {config.frozen_sell_price_ngn != null
+                                ? formatCurrency(config.frozen_sell_price_ngn)
+                                : '—'}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span

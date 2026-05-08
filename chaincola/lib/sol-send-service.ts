@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 /**
  * Request interface for sending SOL
@@ -84,7 +85,7 @@ export async function sendSOL(request: SendSOLRequest): Promise<SendSOLResponse>
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -95,7 +96,8 @@ export async function sendSOL(request: SendSOLRequest): Promise<SendSOLResponse>
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {

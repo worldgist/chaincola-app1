@@ -16,6 +16,12 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import * as bitcoin from "bitcoinjs-lib";
+import ecc from "tiny-secp256k1";
+import { ECPairFactory } from "ecpair";
+import { bytesToBase64 } from "../_shared/bytes-to-base64.ts";
+
+const ECPair = ECPairFactory(ecc);
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -91,8 +97,7 @@ async function encryptPrivateKey(privateKey: string, encryptionKey: string): Pro
     combined.set(iv, salt.length);
     combined.set(new Uint8Array(encrypted), salt.length + iv.length);
 
-    // Return as base64 string
-    const base64Result = btoa(String.fromCharCode(...combined));
+    const base64Result = bytesToBase64(combined);
     
     if (!base64Result || base64Result.length === 0) {
       throw new Error('Base64 encoding returned empty result');
@@ -210,49 +215,6 @@ serve(async (req) => {
     // ============================================================
     console.log(`🔑 Generating new BTC wallet for user ${targetUserId} on ${network}...`);
 
-    // Import bitcoinjs-lib and ECPair dependencies
-    // In bitcoinjs-lib v6, ECPair is a separate module
-    // Using tiny-secp256k1 which is the standard implementation for bitcoinjs-lib
-    const [bitcoinModule, eccModule, ecpairModule] = await Promise.all([
-      import('https://esm.sh/bitcoinjs-lib@6.1.5'),
-      import('https://esm.sh/tiny-secp256k1@1.1.6'),
-      import('https://esm.sh/ecpair@2.0.1')
-    ]);
-    
-    // Handle different export formats
-    const bitcoin = bitcoinModule.default || bitcoinModule;
-    const ecc = eccModule.default || eccModule;
-    
-    // ECPairFactory might be a default export or named export
-    let ECPairFactory: any;
-    if (typeof ecpairModule === 'function') {
-      ECPairFactory = ecpairModule;
-    } else if (ecpairModule.default) {
-      ECPairFactory = typeof ecpairModule.default === 'function' ? ecpairModule.default : ecpairModule.default.default || ecpairModule.default;
-    } else {
-      ECPairFactory = ecpairModule.ECPairFactory || ecpairModule;
-    }
-    
-    // Verify modules loaded correctly
-    if (!bitcoin || !bitcoin.networks) {
-      console.error('❌ Failed to load bitcoinjs-lib');
-      throw new Error('Failed to load bitcoinjs-lib module');
-    }
-    
-    if (!ecc) {
-      console.error('❌ Failed to load tiny-secp256k1');
-      throw new Error('Failed to load tiny-secp256k1 module');
-    }
-    
-    if (!ECPairFactory || typeof ECPairFactory !== 'function') {
-      console.error('❌ Failed to load ECPairFactory');
-      console.error('ECPair module:', Object.keys(ecpairModule));
-      throw new Error('Failed to load ECPairFactory');
-    }
-    
-    // Create ECPair instance with secp256k1 implementation
-    const ECPair = ECPairFactory(ecc);
-    
     // Select network (mainnet or testnet)
     const bitcoinNetwork = network === 'testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
     
@@ -322,19 +284,23 @@ serve(async (req) => {
     // Encryption uses AES-256-GCM with PBKDF2 key derivation.
     // ============================================================
     
-    // Get encryption key from Supabase Secrets
-    // Priority: BTC_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const encryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') ||
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                         Deno.env.get('ETH_ENCRYPTION_KEY');
+    const encryptionKey =
+      Deno.env.get("CRYPTO_ENCRYPTION_KEY") ||
+      Deno.env.get("BTC_ENCRYPTION_KEY") ||
+      Deno.env.get("ETH_ENCRYPTION_KEY") ||
+      Deno.env.get("SOL_ENCRYPTION_KEY") ||
+      Deno.env.get("TRON_ENCRYPTION_KEY");
 
     if (!encryptionKey) {
-      console.error('❌ BTC_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY not set in Supabase secrets');
-      throw new Error('Encryption key not configured. Please set BTC_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY in Supabase secrets.');
+      console.error(
+        "❌ No wallet encryption secret: set CRYPTO_ENCRYPTION_KEY or BTC_ENCRYPTION_KEY in Edge Function secrets",
+      );
+      throw new Error(
+        "Encryption key not configured. Supabase → Project Settings → Edge Functions → Secrets: add CRYPTO_ENCRYPTION_KEY (recommended) or BTC_ENCRYPTION_KEY.",
+      );
     }
 
     console.log(`🔐 Encrypting BTC private key...`);
-    console.log(`   Using encryption key: ${Deno.env.get('BTC_ENCRYPTION_KEY') ? 'BTC_ENCRYPTION_KEY' : Deno.env.get('CRYPTO_ENCRYPTION_KEY') ? 'CRYPTO_ENCRYPTION_KEY' : 'ETH_ENCRYPTION_KEY'}`);
 
     let encryptedPrivateKey: string;
     try {

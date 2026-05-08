@@ -113,14 +113,14 @@ serve(async (req) => {
       );
     }
 
-    // Check if user is admin
-    const { data: profile } = await supabase
+    // Check if user is admin (profiles use user_id = auth.users.id)
+    const { data: profile, error: profileError } = await supabase
       .from('user_profiles')
-      .select('is_admin')
-      .eq('id', user.id)
-      .single();
+      .select('is_admin, role')
+      .eq('user_id', user.id)
+      .maybeSingle();
 
-    if (!profile?.is_admin) {
+    if (profileError || !profile || (!profile.is_admin && profile.role !== 'admin')) {
       return new Response(
         JSON.stringify({ error: 'Forbidden: Admin access required' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -298,35 +298,62 @@ serve(async (req) => {
           );
         }
 
-        const transactionsData: FlutterwaveTransactionsResponse = await JSON.parse(responseText);
-        console.log('✅ Transactions data received:', {
-          status: transactionsData.status,
-          transactionCount: transactionsData.data?.transactions?.length || 0,
-          pageInfo: transactionsData.data?.page_info
-        });
-        
-        // Handle different response structures
-        let transactions = transactionsData.data?.transactions || transactionsData.data || [];
-        let pageInfo = transactionsData.data?.page_info || {
-          total: transactions.length,
-          current_page: parseInt(page),
-          total_pages: 1,
-        };
-        
-        // If transactions is not an array, try to extract from data
-        if (!Array.isArray(transactions) && transactionsData.data) {
-          transactions = Array.isArray(transactionsData.data) ? transactionsData.data : [];
+        const fwJson: Record<string, unknown> = JSON.parse(responseText);
+        const fwData = fwJson.data;
+
+        // Flutterwave v3: `data` is usually an array; pagination lives under `meta.page_info`
+        let rawList: unknown[] = [];
+        if (Array.isArray(fwData)) {
+          rawList = fwData as unknown[];
+        } else if (fwData && typeof fwData === "object" && Array.isArray((fwData as { transactions?: unknown[] }).transactions)) {
+          rawList = (fwData as { transactions: unknown[] }).transactions;
         }
-        
+
+        const meta = fwJson.meta as { page_info?: { total?: number; current_page?: number; total_pages?: number } } | undefined;
+        const metaPage = meta?.page_info;
+        const perPageNum = Math.max(1, parseInt(perPage, 10) || 50);
+        const pageNum = Math.max(1, parseInt(page, 10) || 1);
+        const totalFromMeta = metaPage?.total ?? rawList.length;
+        const totalPagesFromMeta = metaPage?.total_pages ??
+          Math.max(1, Math.ceil(totalFromMeta / perPageNum));
+
+        const normalizeTx = (tx: Record<string, unknown>) => {
+          const cust = tx.customer as Record<string, unknown> | undefined;
+          const customer = cust && typeof cust === "object"
+            ? cust
+            : {
+              id: (tx.customer_id as number) || 0,
+              name: String(tx.customer_name || tx.customer_fullname || ""),
+              email: String(tx.customer_email || ""),
+              phone_number: String(tx.customer_phone || tx.phone_number || ""),
+            };
+          return { ...tx, customer };
+        };
+
+        const transactions = rawList
+          .filter((t) => t && typeof t === "object")
+          .map((t) => normalizeTx(t as Record<string, unknown>));
+
+        const pageInfo = {
+          total: totalFromMeta,
+          current_page: metaPage?.current_page ?? pageNum,
+          total_pages: totalPagesFromMeta,
+        };
+
+        console.log("✅ Transactions normalized:", {
+          count: transactions.length,
+          pageInfo,
+        });
+
         return new Response(
           JSON.stringify({
             success: true,
             data: {
-              transactions: transactions,
+              transactions,
               page_info: pageInfo,
             },
           }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       } catch (error: any) {
         console.error('❌ Error fetching Flutterwave transactions:', error);

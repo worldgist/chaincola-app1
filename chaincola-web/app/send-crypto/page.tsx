@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserCryptoBalances, formatCryptoBalance, formatNgnValue, getLunoPrices } from '@/lib/crypto-price-service';
 import { validateAddress, extractAddressFromQR } from '@/lib/address-validator';
+import { sendBitcoin, sendEthereum, sendUsdc, sendUsdt } from '@/lib/buy-sell-service';
 import Navbar from '../components/Navbar';
 import CryptoSelectModal from '../components/CryptoSelectModal';
 
@@ -36,6 +37,7 @@ export default function SendCryptoPage() {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [sentAmount, setSentAmount] = useState('');
+  const [sendTxHash, setSendTxHash] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -133,11 +135,39 @@ export default function SendCryptoPage() {
     setSending(true);
 
     try {
-      // TODO: Call send crypto API endpoint
-      // For now, simulate success
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      const parsedAmount = parseFloat(amount);
+      let result: any;
+
+      if (crypto.symbol === 'BTC') {
+        result = await sendBitcoin({
+          destination_address: recipientAddress.trim(),
+          amount_btc: parsedAmount.toString(),
+        });
+      } else if (crypto.symbol === 'ETH') {
+        result = await sendEthereum({
+          destination_address: recipientAddress.trim(),
+          amount_eth: parsedAmount.toString(),
+        });
+      } else if (crypto.symbol === 'USDT') {
+        result = await sendUsdt({
+          destination_address: recipientAddress.trim(),
+          amount_usdt: parsedAmount.toString(),
+        });
+      } else if (crypto.symbol === 'USDC') {
+        result = await sendUsdc({
+          destination_address: recipientAddress.trim(),
+          amount_usdc: parsedAmount.toString(),
+        });
+      } else {
+        throw new Error(`Sending ${crypto.symbol} is not supported yet`);
+      }
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to send crypto');
+      }
       
       setSentAmount(amount);
+      setSendTxHash(result.transaction_hash || null);
       setSending(false);
       setShowSuccessModal(true);
       setAmount('');
@@ -365,9 +395,15 @@ export default function SendCryptoPage() {
                 <p className="text-gray-600 mb-6">
                   You have successfully sent {parseFloat(sentAmount).toFixed(8)} {crypto.symbol} to the recipient address.
                 </p>
+                {sendTxHash && (
+                  <p className="text-xs text-gray-500 mb-6 break-all">
+                    Tx Hash: {sendTxHash}
+                  </p>
+                )}
                 <button
                   onClick={() => {
                     setShowSuccessModal(false);
+                    setSendTxHash(null);
                     router.push('/transactions');
                   }}
                   className="w-full bg-gradient-to-r from-purple-600 to-purple-700 text-white py-3 rounded-xl font-semibold hover:from-purple-700 hover:to-purple-800"

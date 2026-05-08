@@ -379,7 +379,7 @@ export function generateWalletFundingEmail(data: WalletFundingEmailData): string
                     <td style="padding: 12px 0; text-align: right; color: #111827; font-size: 14px; font-weight: 600; border-bottom: 1px solid #E5E7EB;">${data.currency === 'NGN' ? '₦' : '$'}${parseFloat(data.amount).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   </tr>
                   <tr>
-                    <td style="padding: 12px 0; color: #6B7280; font-size: 14px; border-bottom: 1px solid #E5E7EB;">Processing Fee (5%)</td>
+                    <td style="padding: 12px 0; color: #6B7280; font-size: 14px; border-bottom: 1px solid #E5E7EB;">Processing fee</td>
                     <td style="padding: 12px 0; text-align: right; color: #111827; font-size: 14px; font-weight: 600; border-bottom: 1px solid #E5E7EB;">${data.currency === 'NGN' ? '₦' : '$'}${parseFloat(data.fee).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                   </tr>
                   ` : `

@@ -78,7 +78,7 @@ export default function SellBtcPage() {
 
     setExecuting(true);
     try {
-      const result = await executeSellBtc(sellId);
+      const result = await executeSellBtc({ sell_id: sellId });
       
       if (result.success) {
         setSellStatus(result.status || 'BTC_SENT');
@@ -99,7 +99,7 @@ export default function SellBtcPage() {
 
     const interval = setInterval(async () => {
       try {
-        const result = await getSellBtcStatus(sellId);
+        const result = await getSellBtcStatus({ sell_id: sellId });
         if (result.success && result.sell_order) {
           const status = result.sell_order.status;
           setSellStatus(status);

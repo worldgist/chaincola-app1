@@ -14,7 +14,24 @@ export interface AccountDeletion {
   updated_at: string;
 }
 
-const GRACE_PERIOD_DAYS = 30;
+/** Default grace window (must match typical `create_account_deletion_request` usage). */
+export const ACCOUNT_DELETION_GRACE_PERIOD_DAYS = 30;
+
+export function getGracePeriodMeta(deletion: AccountDeletion): {
+  totalDays: number;
+  remainingDays: number;
+  progressPercent: number;
+} {
+  const req = new Date(deletion.requested_at).getTime();
+  const sched = new Date(deletion.scheduled_deletion_at).getTime();
+  const now = Date.now();
+  const totalMs = Math.max(60_000, sched - req);
+  const remainingMs = Math.max(0, sched - now);
+  const totalDays = Math.max(1, Math.ceil((sched - req) / (24 * 60 * 60 * 1000)));
+  const remainingDays = Math.max(0, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+  const progressPercent = Math.min(100, Math.max(0, 100 * (1 - remainingMs / totalMs)));
+  return { totalDays, remainingDays, progressPercent };
+}
 
 /**
  * Creates an account deletion request
@@ -29,7 +46,7 @@ export async function createAccountDeletionRequest(
     const { data: deletionId, error } = await supabase.rpc('create_account_deletion_request', {
       p_user_id: userId,
       p_reason: reason || null,
-      p_grace_period_days: GRACE_PERIOD_DAYS,
+      p_grace_period_days: ACCOUNT_DELETION_GRACE_PERIOD_DAYS,
     });
 
     if (error) {
@@ -51,7 +68,7 @@ export async function createAccountDeletionRequest(
 
     // Fetch the created deletion request
     if (deletionId) {
-      const deletionRequest = await getUserDeletionRequest(userId);
+      const { request: deletionRequest } = await fetchUserDeletionRequest(userId);
       if (deletionRequest) {
         return {
           success: true,
@@ -89,18 +106,19 @@ export async function createAccountDeletionRequest(
 }
 
 /**
- * Gets the user's account deletion request
+ * Loads pending/processing deletion request for the user (real Supabase data).
+ * `error` is set when the query fails — distinct from “no pending request”.
  */
-export async function getUserDeletionRequest(userId: string): Promise<AccountDeletion | null> {
+export async function fetchUserDeletionRequest(
+  userId: string,
+): Promise<{ request: AccountDeletion | null; error: string | null }> {
   try {
-    // Use the database function to get deletion request
     const { data, error } = await supabase.rpc('get_user_deletion_request', {
       p_user_id: userId,
     });
 
     if (error) {
-      console.error('Error fetching account deletion request:', error);
-      // Fallback to direct query
+      console.error('Error fetching account deletion request (rpc):', error.message);
       const { data: directData, error: directError } = await supabase
         .from('account_deletions')
         .select('*')
@@ -111,26 +129,31 @@ export async function getUserDeletionRequest(userId: string): Promise<AccountDel
         .maybeSingle();
 
       if (directError) {
-        // If no record found, it's not an error
         if (directError.code === 'PGRST116') {
-          return null;
+          return { request: null, error: null };
         }
-        console.error('Error with fallback query:', directError);
-        return null;
+        return {
+          request: null,
+          error: directError.message || 'Failed to load deletion status',
+        };
       }
 
-      return directData as AccountDeletion | null;
+      return { request: (directData as AccountDeletion | null) ?? null, error: null };
     }
 
-    if (data && data.length > 0) {
-      return data[0] as AccountDeletion;
-    }
-
-    return null;
-  } catch (error: any) {
-    console.error('Exception fetching account deletion request:', error);
-    return null;
+    const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+    return { request: row as AccountDeletion | null, error: null };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('Exception fetching account deletion request:', msg);
+    return { request: null, error: msg || 'Failed to load deletion status' };
   }
+}
+
+/** @deprecated use fetchUserDeletionRequest for proper error handling */
+export async function getUserDeletionRequest(userId: string): Promise<AccountDeletion | null> {
+  const { request } = await fetchUserDeletionRequest(userId);
+  return request;
 }
 
 /**

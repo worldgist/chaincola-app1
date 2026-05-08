@@ -140,7 +140,7 @@ export default function AdminLoginPage() {
         // Refresh profile after granting admin access
         const { data: updatedProfile } = await supabase
           .from('user_profiles')
-          .select('is_admin, role')
+          .select('is_admin, role, email, full_name')
           .eq('user_id', authData.user.id)
           .single();
 

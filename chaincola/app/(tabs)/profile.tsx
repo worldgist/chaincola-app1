@@ -9,10 +9,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getUserProfile, getUserInitials } from '@/lib/user-service';
 import { isBiometricEnabled, saveBiometricPreference, getBiometricType } from '@/lib/auth-utils';
 import { getUserVerificationStatus, type VerificationStatus } from '@/lib/verification-service';
-import { getUserTransactions } from '@/lib/transaction-service';
+import { getUserTransactionsForStatement } from '@/lib/transaction-service';
+import { supabase } from '@/lib/supabase';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 
 export default function ProfileScreen() {
@@ -102,7 +102,7 @@ export default function ProfileScreen() {
     if (user?.email) {
       return user.email;
     }
-    return 'user@example.com';
+    return '';
   };
 
   const getUserAvatar = () => {
@@ -240,42 +240,114 @@ export default function ProfileScreen() {
     setShowStatementModal(false);
 
     try {
-      // Fetch transactions directly from Supabase filtered by date range
-      const { supabase } = await import('@/lib/supabase');
-      const supabaseClient = supabase;
-      
-      // Use parsed dates
-      const startDateTime = new Date(parsedStartDate);
-      startDateTime.setHours(0, 0, 0, 0);
-      const endDateTime = new Date(parsedEndDate);
-      endDateTime.setHours(23, 59, 59, 999);
-      
-      const { data: transactionsData, error: fetchError } = await supabaseClient
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .gte('created_at', startDateTime.toISOString())
-        .lte('created_at', endDateTime.toISOString())
-        .order('created_at', { ascending: false })
-        .limit(1000);
+      const { rows: transactionsData, error: fetchErr } = await getUserTransactionsForStatement(
+        user.id,
+        parsedStartDate,
+        parsedEndDate,
+        2000,
+      );
 
-      if (fetchError) {
-        Alert.alert('Error', 'Failed to fetch transactions. Please try again.');
+      if (fetchErr) {
+        Alert.alert('Error', fetchErr || 'Failed to fetch transactions. Please try again.');
         setGeneratingStatement(false);
         return;
       }
 
       if (!transactionsData || transactionsData.length === 0) {
-        Alert.alert('No Transactions', `You have no transactions between ${formatDateForDisplay(startDate)} and ${formatDateForDisplay(endDate)}.`);
+        Alert.alert(
+          'No Transactions',
+          `You have no transactions between ${formatDateForDisplay(parsedStartDate)} and ${formatDateForDisplay(parsedEndDate)}.`,
+        );
         setGeneratingStatement(false);
         return;
       }
 
-      // Get user info
+      const escapeHtml = (s: string) =>
+        String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+
       const userName = getUserName();
       const userEmail = getUserEmail();
+      const rawPhone = userProfile?.phone_number || userProfile?.phone;
+      const userPhone =
+        rawPhone != null && String(rawPhone).trim() !== '' ? String(rawPhone).trim() : '';
 
-      // Format dates for display
+      const statementRef = (tx: Record<string, unknown>) => {
+        const ext = [tx.external_reference, tx.external_order_id, tx.external_transaction_id].find(
+          (v) => v != null && String(v).trim() !== '',
+        );
+        if (ext) return escapeHtml(String(ext));
+        const hash = tx.transaction_hash ? String(tx.transaction_hash) : '';
+        if (hash.length > 10) return escapeHtml(`${hash.slice(0, 14)}…`);
+        return escapeHtml(String(tx.id ?? '').slice(0, 8));
+      };
+
+      const statementAmountDisplay = (tx: Record<string, unknown>) => {
+        const cryptoCur = tx.crypto_currency != null ? String(tx.crypto_currency) : '';
+        const fiatCur = tx.fiat_currency != null ? String(tx.fiat_currency) : 'NGN';
+        const cryptoAmt =
+          tx.crypto_amount != null && tx.crypto_amount !== '' ? Number(tx.crypto_amount) : NaN;
+        const fiatAmt =
+          tx.fiat_amount != null && tx.fiat_amount !== '' ? Number(tx.fiat_amount) : NaN;
+        const isCryptoRow =
+          cryptoCur && cryptoCur !== 'FIAT' && !Number.isNaN(cryptoAmt) && cryptoAmt !== 0;
+        if (isCryptoRow) {
+          const n = Math.abs(cryptoAmt);
+          const cryptoPart = `${cryptoCur} ${n.toLocaleString('en-US', {
+            minimumFractionDigits: 6,
+            maximumFractionDigits: 8,
+          })}`;
+          if (!Number.isNaN(fiatAmt) && fiatAmt !== 0) {
+            const fiatPart =
+              fiatCur === 'NGN'
+                ? `₦${Math.abs(fiatAmt).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`
+                : `${fiatCur} ${Math.abs(fiatAmt).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`;
+            return escapeHtml(`${fiatPart} (≈ ${cryptoPart})`);
+          }
+          return escapeHtml(cryptoPart);
+        }
+        if (!Number.isNaN(fiatAmt)) {
+          const n = Math.abs(fiatAmt);
+          if (fiatCur === 'NGN') {
+            return escapeHtml(
+              `₦${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            );
+          }
+          return escapeHtml(
+            `${fiatCur} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          );
+        }
+        if (!Number.isNaN(cryptoAmt) && cryptoAmt !== 0) {
+          return escapeHtml(String(Math.abs(cryptoAmt)));
+        }
+        return '—';
+      };
+
+      const statementFee = (tx: Record<string, unknown>) => {
+        const f = tx.fee_amount;
+        if (f == null || f === '') return '—';
+        const n = Number(f);
+        if (Number.isNaN(n) || n === 0) return '—';
+        const cur = String(tx.fee_currency || tx.fiat_currency || 'NGN');
+        if (cur === 'NGN') {
+          return escapeHtml(
+            `₦${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          );
+        }
+        return escapeHtml(
+          `${cur} ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })}`,
+        );
+      };
+
       const formatDate = (dateString: string) => {
         try {
           return new Date(dateString).toLocaleDateString('en-US', {
@@ -290,13 +362,17 @@ export default function ProfileScreen() {
         }
       };
 
-              // Generate HTML for PDF
-              const htmlContent = `
+      const safeName = escapeHtml(userName);
+      const safeEmail = escapeHtml(userEmail || '—');
+      const safePhone = userPhone ? escapeHtml(userPhone) : '';
+
+      // Generate HTML for PDF
+      const htmlContent = `
                 <!DOCTYPE html>
                 <html>
                   <head>
                     <meta charset="UTF-8">
-                    <title>Transaction Statement - ${userName}</title>
+                    <title>Transaction Statement - ${safeName}</title>
                     <style>
                       body {
                         font-family: Arial, sans-serif;
@@ -377,9 +453,10 @@ export default function ProfileScreen() {
                     
                     <div class="user-info">
                       <h2>User Information</h2>
-                      <p><strong>Name:</strong> ${userName}</p>
-                      <p><strong>Email:</strong> ${userEmail}</p>
-                      <p><strong>User ID:</strong> ${user.id}</p>
+                      <p><strong>Name:</strong> ${safeName}</p>
+                      <p><strong>Email:</strong> ${safeEmail}</p>
+                      ${safePhone ? `<p><strong>Phone:</strong> ${safePhone}</p>` : ''}
+                      <p><strong>Account ID:</strong> ${escapeHtml(user.id)}</p>
                     </div>
                     
                     <div class="date-range">
@@ -391,41 +468,52 @@ export default function ProfileScreen() {
                       <thead>
                         <tr>
                           <th>Date</th>
+                          <th>Reference</th>
                           <th>Type</th>
                           <th>Asset</th>
                           <th>Amount</th>
+                          <th>Fee</th>
                           <th>Status</th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${transactionsData.map((tx: any) => {
-                          const status = (tx.status || '').toUpperCase();
-                          const statusClass = status === 'COMPLETED' || status === 'CONFIRMED' ? 'status-completed' : 
-                                             status === 'FAILED' || status === 'CANCELLED' ? 'status-failed' : 'status-pending';
-                          const statusText = status === 'COMPLETED' || status === 'CONFIRMED' ? 'Completed' : 
-                                            status === 'FAILED' || status === 'CANCELLED' ? 'Failed' : 'Pending';
-                          
-                          const currency = tx.crypto_currency && tx.crypto_currency !== 'FIAT'
-                            ? tx.crypto_currency
-                            : (tx.fiat_currency || 'NGN');
-                          
-                          const amount = tx.crypto_amount || tx.fiat_amount || tx.amount || 0;
-                          const formattedAmount = currency === 'NGN' 
-                            ? `₦${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                            : `${currency} ${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 8, maximumFractionDigits: 8 })}`;
-                          
-                          const transactionType = (tx.transaction_type || '').toLowerCase();
-                          
-                          return `
+                        ${transactionsData
+                          .map((tx: Record<string, unknown>) => {
+                            const status = String(tx.status || '').toUpperCase();
+                            const statusClass =
+                              status === 'COMPLETED' || status === 'CONFIRMED'
+                                ? 'status-completed'
+                                : status === 'FAILED' || status === 'CANCELLED'
+                                  ? 'status-failed'
+                                  : 'status-pending';
+                            const statusText =
+                              status === 'COMPLETED' || status === 'CONFIRMED'
+                                ? 'Completed'
+                                : status === 'FAILED' || status === 'CANCELLED'
+                                  ? 'Failed'
+                                  : 'Pending';
+
+                            const currency =
+                              tx.crypto_currency && String(tx.crypto_currency) !== 'FIAT'
+                                ? String(tx.crypto_currency)
+                                : String(tx.fiat_currency || 'NGN');
+
+                            const transactionType = String(tx.transaction_type || '').toUpperCase() || 'N/A';
+                            const created = typeof tx.created_at === 'string' ? tx.created_at : '';
+
+                            return `
                             <tr>
-                              <td>${formatDate(tx.created_at)}</td>
-                              <td>${transactionType || 'N/A'}</td>
-                              <td>${currency}</td>
-                              <td>${formattedAmount}</td>
+                              <td>${formatDate(created)}</td>
+                              <td>${statementRef(tx)}</td>
+                              <td>${escapeHtml(transactionType)}</td>
+                              <td>${escapeHtml(currency)}</td>
+                              <td>${statementAmountDisplay(tx)}</td>
+                              <td>${statementFee(tx)}</td>
                               <td class="${statusClass}">${statusText}</td>
                             </tr>
                           `;
-                        }).join('')}
+                          })
+                          .join('')}
                       </tbody>
                     </table>
                     
@@ -459,19 +547,7 @@ export default function ProfileScreen() {
           const base64 = await FileSystem.readAsStringAsync(uri, {
             encoding: 'base64' as any,
           });
-          
-          const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
-                             process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                             process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                             'https://slleojsdpctxhlsoyenr.supabase.co';
-          
-          const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
-                                 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                                 process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-          
-          const { data: { session } } = await supabaseClient.auth.getSession();
-          const authToken = session?.access_token || supabaseAnonKey || '';
-          
+
           const emailHtml = `
             <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto;">
               <div style="background: linear-gradient(135deg, #6B46C1 0%, #9333EA 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
@@ -479,9 +555,9 @@ export default function ProfileScreen() {
                 <p style="color: #E9D5FF; margin: 8px 0 0 0;">ChainCola Platform</p>
               </div>
               <div style="background: #FFFFFF; padding: 30px; border-radius: 0 0 10px 10px; border: 1px solid #E5E7EB; border-top: none;">
-                <p style="font-size: 16px; color: #374151; margin-bottom: 16px;">Dear ${userName},</p>
+                <p style="font-size: 16px; color: #374151; margin-bottom: 16px;">Dear ${safeName},</p>
                 <p style="font-size: 15px; color: #6B7280; line-height: 1.6; margin-bottom: 16px;">
-                  Please find attached your transaction statement for the period <strong>${formatDateForDisplay(startDate)}</strong> to <strong>${formatDateForDisplay(endDate)}</strong>.
+                  Please find attached your transaction statement for the period <strong>${formatDateForDisplay(parsedStartDate)}</strong> to <strong>${formatDateForDisplay(parsedEndDate)}</strong>.
                 </p>
                 <div style="background: #F3F4F6; padding: 16px; border-radius: 8px; margin: 20px 0;">
                   <p style="margin: 0; font-size: 14px; color: #374151;"><strong>Total Transactions:</strong> ${transactionsData.length}</p>
@@ -495,45 +571,40 @@ export default function ProfileScreen() {
               </div>
             </div>
           `;
-          
-          const response = await fetch(`${supabaseUrl}/functions/v1/send-email`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': supabaseAnonKey || '',
-              'Authorization': `Bearer ${authToken}`,
-            },
-            body: JSON.stringify({
+
+          type SendEmailResult = { success?: boolean; error?: string; skipped?: boolean; message?: string };
+          const { data: fnData, error: fnError } = await supabase.functions.invoke<SendEmailResult>('send-email', {
+            body: {
               to: emailAddress.trim(),
-              subject: `Transaction Statement - ${formatDateForDisplay(startDate)} to ${formatDateForDisplay(endDate)}`,
+              subject: `Transaction Statement - ${formatDateForDisplay(parsedStartDate)} to ${formatDateForDisplay(parsedEndDate)}`,
               html: emailHtml,
               userId: user.id,
               type: 'statement',
-              attachments: [{
-                filename: `statement-${formatDateForQuery(startDate)}-to-${formatDateForQuery(endDate)}.pdf`,
-                content: base64,
-                type: 'application/pdf',
-              }],
-            }),
+              attachments: [
+                {
+                  filename: `statement-${formatDateForQuery(parsedStartDate)}-to-${formatDateForQuery(parsedEndDate)}.pdf`,
+                  content: base64,
+                  type: 'application/pdf',
+                },
+              ],
+            },
           });
 
-          const text = await response.text();
-          let result: { success?: boolean; error?: string; skipped?: boolean } = {};
-          try {
-            result = JSON.parse(text);
-          } catch {
-            throw new Error(response.ok ? 'Invalid response from server' : `Server error (${response.status}). Check that send-email is deployed and RESEND_API_KEY is set.`);
+          if (fnError) {
+            throw new Error(
+              fnError.message ||
+                'Could not reach send-email. Check network and that the edge function is deployed.',
+            );
           }
-          if (!response.ok) {
-            throw new Error(result.error || `Request failed (${response.status})`);
-          }
-          if (result.success && !result.skipped) {
+
+          const result = fnData;
+          if (result?.success && !result.skipped) {
             setSuccessMessage(`Statement PDF has been sent to ${emailAddress.trim()}`);
             setShowSuccessModal(true);
-          } else if (result.skipped) {
+          } else if (result?.skipped) {
             throw new Error('Email was not sent (notifications disabled). Try sharing the PDF instead.');
           } else {
-            throw new Error(result.error || 'Failed to send email');
+            throw new Error(result?.error || 'Failed to send email');
           }
         } catch (emailError: any) {
           console.error('Error sending email:', emailError);
@@ -611,6 +682,13 @@ export default function ProfileScreen() {
     }
 
     try {
+      // If turning OFF, also remove stored biometric credentials so biometric login is not possible.
+      // The sign-in screen enables biometric login based on stored credentials presence.
+      if (value === false) {
+        const { deleteBiometricCredentials } = await import('@/lib/biometric-service');
+        await deleteBiometricCredentials();
+      }
+
       const biometricType = await getBiometricType();
       const success = await saveBiometricPreference(user.id, value, biometricType || undefined);
       
@@ -872,7 +950,7 @@ export default function ProfileScreen() {
               <View style={[styles.iconContainer, { backgroundColor: '#EDE9FE' }]}>
                 <MaterialIcons name="chat" size={18} color="#6B46C1" />
               </View>
-              <ThemedText style={styles.menuItemText}>Chat Support</ThemedText>
+              <ThemedText style={styles.menuItemText}>Live Chat</ThemedText>
             </View>
             <MaterialIcons name="chevron-right" size={20} color="#9CA3AF" />
           </TouchableOpacity>

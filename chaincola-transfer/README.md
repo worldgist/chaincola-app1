@@ -71,10 +71,15 @@ GET /api/transfer?page=1&status=SUCCESSFUL
 
 ## Deployment
 
-### Using PM2 (Recommended):
+For the production VPS (`root@72.61.136.143`, served at `https://api.chaincola.com`)
+follow the step-by-step guide in [`DEPLOY.md`](./DEPLOY.md). It uses the
+idempotent installer [`deploy.sh`](./deploy.sh) which sets up Node.js, PM2,
+nginx, UFW, and Let's Encrypt SSL in one shot.
+
+### Quick reference (manual PM2)
 ```bash
 npm install -g pm2
-pm2 start src/index.js --name chaincola-transfer
+pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
 ```

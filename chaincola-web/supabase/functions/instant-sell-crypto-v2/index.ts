@@ -5,20 +5,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoSellNotification } from "../_shared/send-crypto-sell-notification.ts";
+import { evaluateInstantSell } from "../_shared/treasury-trade-gates.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
-// Safety controls
-const MAX_SELL_PER_TRANSACTION: Record<string, number> = {
-  'BTC': 10,
-  'ETH': 100,
-  'USDT': 100000,
-  'USDC': 100000,
-  'XRP': 1000000,
-  'SOL': 10000,
 };
 
 // Minimum system reserve - can be overridden via environment variable
@@ -106,17 +97,9 @@ serve(async (req) => {
       );
     }
 
-    // Check max sell per transaction
-    const maxSell = MAX_SELL_PER_TRANSACTION[assetUpper];
-    if (maxSell && cryptoAmount > maxSell) {
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: `Amount exceeds maximum sell per transaction: ${maxSell} ${assetUpper}` 
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    const sellEval = await evaluateInstantSell(supabase, assetUpper, corsHeaders, cryptoAmount);
+    if (!sellEval.ok) return sellEval.response;
+    const effectiveMaxSell = sellEval.effectiveMaxSell;
 
     console.log(`💰 Instant sell request: User=${user.id}, Asset=${assetUpper}, Amount=${cryptoAmount}`);
 
@@ -203,7 +186,7 @@ serve(async (req) => {
       p_amount: cryptoAmount,
       p_rate: rate,
       p_fee_percentage: feePercentage,
-      p_max_sell_per_transaction: maxSell || null,
+      p_max_sell_per_transaction: effectiveMaxSell > 0 ? effectiveMaxSell : null,
       p_min_system_reserve: MIN_SYSTEM_RESERVE,
     });
 

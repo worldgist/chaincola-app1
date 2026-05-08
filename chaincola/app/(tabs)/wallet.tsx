@@ -70,8 +70,8 @@ export default function WalletScreen() {
       const balanceTimeout = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Balance fetch timeout')), 10000)
       );
-      const priceTimeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Price fetch timeout')), 12000)
+      const priceTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Price fetch timeout')), 25000)
       );
       
       const [balancesResult, pricesResult] = await Promise.all([
@@ -453,6 +453,11 @@ export default function WalletScreen() {
                           >
                             {asset.balance}
                           </ThemedText>
+                          {asset.pricePerUnitNGN && asset.pricePerUnitNGN !== 'N/A' ? (
+                            <ThemedText style={styles.assetPrice} numberOfLines={1}>
+                              {asset.pricePerUnitNGN}/unit
+                            </ThemedText>
+                          ) : null}
                         </View>
                         {asset.symbol === 'SOL' && !action && (
                           <TouchableOpacity

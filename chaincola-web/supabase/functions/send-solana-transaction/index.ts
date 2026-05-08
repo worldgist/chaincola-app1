@@ -118,28 +118,49 @@ serve(async (req) => {
       );
     }
 
-    // Decrypt private key
-    const encryptionKey = Deno.env.get('SOL_ENCRYPTION_KEY') || 
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') || 
-                         Deno.env.get('ETH_ENCRYPTION_KEY');
-    
-    if (!encryptionKey) {
+    const possibleEncryptionKeys = [
+      Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('SOL_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
+      Deno.env.get('BTC_ENCRYPTION_KEY'),
+    ].filter((k): k is string => !!k && k.length > 0);
+
+    if (possibleEncryptionKeys.length === 0) {
       return new Response(
-        JSON.stringify({ success: false, error: "Encryption key not configured" }),
+        JSON.stringify({ success: false, error: "Encryption key not configured. Set CRYPTO_ENCRYPTION_KEY in Edge Function secrets." }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    let privateKeyHex: string;
+    let privateKeyHex: string | undefined;
     try {
-      privateKeyHex = await decryptPrivateKey(solWallet.private_key_encrypted, encryptionKey);
+      let decryptErr: Error | null = null;
+      for (const encryptionKey of possibleEncryptionKeys) {
+        try {
+          privateKeyHex = await decryptPrivateKey(solWallet.private_key_encrypted, encryptionKey);
+          decryptErr = null;
+          break;
+        } catch (e: unknown) {
+          decryptErr = e instanceof Error ? e : new Error(String(e));
+        }
+      }
+      if (!privateKeyHex) {
+        throw decryptErr || new Error('Failed to decrypt with any configured key');
+      }
     } catch (decryptError: any) {
       console.error('Decryption error:', decryptError);
       return new Response(
         JSON.stringify({ 
           success: false, 
-          error: `Failed to decrypt private key: ${decryptError.message}. Please ensure the encryption key matches the one used to encrypt the private key.` 
+          error: `Failed to decrypt private key: ${decryptError.message}. Ensure CRYPTO_ENCRYPTION_KEY matches the key used when the wallet was created.` 
         }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!privateKeyHex) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Decryption failed" }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

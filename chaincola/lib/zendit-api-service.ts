@@ -1,18 +1,19 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 // Get Supabase URL for Edge Function
-const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl || 
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     SUPABASE_URL;
 
-const ZENDIT_EDGE_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/get-zendit-brands`;
-const ZENDIT_VOUCHER_OFFERS_URL = `${SUPABASE_URL}/functions/v1/get-zendit-voucher-offers`;
-const ZENDIT_VOUCHER_OFFER_BY_ID_URL = `${SUPABASE_URL}/functions/v1/get-zendit-voucher-offer-by-id`;
-const ZENDIT_VOUCHER_PURCHASES_URL = `${SUPABASE_URL}/functions/v1/get-zendit-voucher-purchases`;
-const ZENDIT_CREATE_VOUCHER_PURCHASE_URL = `${SUPABASE_URL}/functions/v1/create-zendit-voucher-purchase`;
-const ZENDIT_BRAND_DETAILS_URL = `${SUPABASE_URL}/functions/v1/get-zendit-brand-details`;
+const ZENDIT_EDGE_FUNCTION_URL = `${supabaseUrl}/functions/v1/get-zendit-brands`;
+const ZENDIT_VOUCHER_OFFERS_URL = `${supabaseUrl}/functions/v1/get-zendit-voucher-offers`;
+const ZENDIT_VOUCHER_OFFER_BY_ID_URL = `${supabaseUrl}/functions/v1/get-zendit-voucher-offer-by-id`;
+const ZENDIT_VOUCHER_PURCHASES_URL = `${supabaseUrl}/functions/v1/get-zendit-voucher-purchases`;
+const ZENDIT_CREATE_VOUCHER_PURCHASE_URL = `${supabaseUrl}/functions/v1/create-zendit-voucher-purchase`;
+const ZENDIT_BRAND_DETAILS_URL = `${supabaseUrl}/functions/v1/get-zendit-brand-details`;
 
 export interface ZenditBrand {
   id: string; // Mapped from API's "brand" field
@@ -232,7 +233,7 @@ export async function getZenditBrands(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log('📡 Fetching Zendit brands via Edge Function');
 
@@ -435,7 +436,7 @@ export async function getZenditVoucherOffers(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log('📡 Fetching Zendit voucher offers via Edge Function');
 
@@ -607,7 +608,7 @@ export async function getZenditVoucherOfferById(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log(`📡 Fetching Zendit voucher offer by ID via Edge Function: ${offerId}`);
 
@@ -728,7 +729,7 @@ export async function getZenditVoucherPurchases(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log('📡 Fetching Zendit voucher purchases via Edge Function');
 
@@ -854,7 +855,7 @@ export async function createZenditVoucherPurchase(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log('📡 Creating Zendit voucher purchase via Edge Function');
 
@@ -1313,7 +1314,7 @@ export async function getBrandDetails(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     // Silently fetch - don't log to reduce noise
 

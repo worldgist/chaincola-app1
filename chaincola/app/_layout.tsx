@@ -11,6 +11,8 @@ import '@/lib/push-notification-service';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
+import { parseSupabaseAuthTokensFromUrl } from '@/lib/supabase-auth-redirect';
 
 export const unstable_settings = {
   initialRouteName: 'index',
@@ -21,9 +23,27 @@ function DeeplinkHandler() {
   const router = useRouter();
   const { user } = useAuth();
 
-  const handleDeeplink = useCallback((url: string) => {
+  const handleDeeplink = useCallback(async (url: string) => {
     console.log('🔗 Deeplink received:', url);
-    
+
+    if (url.includes('access_token=') && url.includes('refresh_token=')) {
+      const { access_token, refresh_token, type } = parseSupabaseAuthTokensFromUrl(url);
+      if (access_token && refresh_token) {
+        const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+        if (error) {
+          console.error('❌ Supabase session from link:', error.message);
+          router.replace('/auth/signin');
+          return;
+        }
+        if (type === 'recovery') {
+          router.replace('/auth/reset-password');
+        } else {
+          router.replace('/(tabs)');
+        }
+        return;
+      }
+    }
+
     try {
       const parsed = Linking.parse(url);
       const { hostname, path, queryParams } = parsed;
@@ -86,13 +106,13 @@ function DeeplinkHandler() {
     // Handle initial URL (app opened via deeplink)
     Linking.getInitialURL().then((url) => {
       if (url) {
-        handleDeeplink(url);
+        void handleDeeplink(url);
       }
     });
 
     // Handle URL when app is already running
     const subscription = Linking.addEventListener('url', (event) => {
-      handleDeeplink(event.url);
+      void handleDeeplink(event.url);
     });
 
     return () => {

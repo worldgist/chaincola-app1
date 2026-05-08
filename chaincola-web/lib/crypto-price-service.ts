@@ -1,4 +1,5 @@
 import { createClient } from './supabase/client';
+import { applyRetailSpreadToRow, extractEngineBuySell } from '@/lib/retail-pricing';
 
 const supabase = createClient();
 
@@ -25,16 +26,17 @@ interface CachedPrices {
 
 let priceCache: CachedPrices | null = null;
 
-/** Price from app: price_ngn/ask = buy rate (static when set), bid = sell rate (static when set) */
+/** Market / admin price row */
 export interface CryptoPrice {
   crypto_symbol: string;
   price_usd: number;
-  /** Buy rate in NGN (admin static rate when set) */
+  /** NGN spot or admin buy rate when from pricing engine */
   price_ngn: number;
   last_updated: string;
-  /** Sell rate in NGN (admin static rate when set) */
   bid?: number;
   ask?: number;
+  volume_24h?: number;
+  change_24h_pct?: number;
 }
 
 export interface CryptoBalance {
@@ -48,69 +50,11 @@ async function getUsdToNgnRate(): Promise<number> {
   return USD_TO_NGN_RATE;
 }
 
-/**
- * Fetch price from Alchemy API (for ETH and SOL)
- */
-async function fetchPriceFromAlchemy(symbol: string): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
-  try {
-    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-      throw new Error('Supabase not configured');
-    }
-
-    const functionName = symbol.toUpperCase() === 'ETH' ? 'get-ethereum-price' : 'get-solana-price';
-    const functionUrl = `${SUPABASE_URL}/functions/v1/${functionName}`;
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    
-    try {
-      const response = await fetch(functionUrl, {
-        method: 'GET',
-        headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch ${symbol} price: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      if (data.success && data.price) {
-        return {
-          prices: {
-            [symbol.toUpperCase()]: {
-              crypto_symbol: symbol.toUpperCase(),
-              price_usd: data.price.price_usd || 0,
-              price_ngn: data.price.price_ngn || 0,
-              last_updated: data.price.last_updated || new Date().toISOString(),
-            },
-          },
-          error: null,
-        };
-      } else {
-        throw new Error(data.error || `Failed to fetch ${symbol} price`);
-      }
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
-        throw new Error(`Timeout fetching ${symbol} price`);
-      }
-      throw error;
-    }
-  } catch (error: any) {
-    console.error(`Error fetching ${symbol} price from Alchemy:`, error);
-    return { prices: {}, error: error.message || `Failed to fetch ${symbol} price` };
-  }
-}
-
-async function fetchPricesFromLunoAPI(symbols: string[]): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+async function fetchPricesFromLunoAPI(
+  symbols: string[],
+  options?: { timeoutMs?: number },
+): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+  const timeoutMs = options?.timeoutMs ?? 5000;
   try {
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
       const errorMsg = 'Supabase not configured. Please check NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables.';
@@ -122,11 +66,11 @@ async function fetchPricesFromLunoAPI(symbols: string[]): Promise<{ prices: Reco
     }
 
     // Use Edge Function instead of direct API call to avoid CORS issues
-    const functionUrl = `${SUPABASE_URL}/functions/v1/get-luno-prices?symbols=${symbols.join(',')}`;
+    // Now backed by Alchemy Prices API for all supported tokens
+    const functionUrl = `${SUPABASE_URL}/functions/v1/get-token-prices?symbols=${symbols.join(',')}`;
     
-    // Add timeout to fetch (5 seconds)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
     try {
       const response = await fetch(functionUrl, {
@@ -178,6 +122,8 @@ async function fetchPricesFromLunoAPI(symbols: string[]): Promise<{ prices: Reco
             bid: priceData.bid,
             ask: priceData.ask,
             last_updated: priceData.last_updated || new Date().toISOString(),
+            volume_24h: priceData.volume_24h,
+            change_24h_pct: priceData.change_24h_pct,
           };
         }
       }
@@ -188,7 +134,7 @@ async function fetchPricesFromLunoAPI(symbols: string[]): Promise<{ prices: Reco
       
       // Check if it's an abort error (timeout)
       if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-        console.warn('⚠️ Price fetch timeout after 5 seconds');
+        console.warn(`⚠️ Price fetch timeout after ${timeoutMs}ms`);
         return { prices: {}, error: 'Request timeout' };
       }
       
@@ -210,60 +156,133 @@ async function fetchPricesFromLunoAPI(symbols: string[]): Promise<{ prices: Reco
 }
 
 /**
- * Get buy/sell prices from pricing engine only (static rates).
- * Does not use Luno, Alchemy, or any market/crypto price — only admin-set static rates.
+ * Live spot from `get-luno-prices` only (Alchemy USD → NGN + Luno NGN pairs).
+ * Does not merge admin pricing-engine overrides — use for dashboards / comparing to overrides.
+ */
+export async function getMarketSpotPrices(
+  symbols: string[],
+  options?: { timeoutMs?: number },
+): Promise<{ prices: Record<string, CryptoPrice>; error: string | null }> {
+  const normalized = symbols.map((s) => s.toUpperCase().trim()).filter(Boolean);
+  const result = await fetchPricesFromLunoAPI(normalized, {
+    timeoutMs: options?.timeoutMs ?? 20_000,
+  });
+  return {
+    prices: result.prices || {},
+    error: result.error != null ? String(result.error) : null,
+  };
+}
+
+/**
+ * Get market prices for buy/sell flows.
+ * Priority: edge function (Alchemy + Luno), then admin pricing-engine static.
  */
 export async function getLunoPrices(symbols: string[]): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
   try {
+    const normalizedSymbols = symbols.map((s) => s.toUpperCase());
     if (priceCache && Date.now() - priceCache.timestamp < CACHE_DURATION_MS) {
-      return { prices: priceCache.prices, error: null };
-    }
-
-    let configMap: Record<string, any> = {};
-    try {
-      const { getPricingEngineConfigsBatch } = await import('@/lib/admin-pricing-engine-service');
-      const configPromise = getPricingEngineConfigsBatch(symbols);
-      const configTimeout = new Promise<Record<string, any>>((resolve) =>
-        setTimeout(() => resolve({}), 1500)
-      );
-      configMap = await Promise.race([configPromise, configTimeout]).catch(() => ({}));
-    } catch (e) {
-      console.warn('Pricing engine unavailable:', e);
-    }
-
-    const USD_TO_NGN = 1650;
-    const finalPrices: Record<string, CryptoPrice> = {};
-    const now = new Date().toISOString();
-
-    for (const symbol of symbols) {
-      const sym = symbol.toUpperCase();
-      const config = configMap[sym];
-      let buyPrice = 0;
-      let sellPrice = 0;
-      if (config) {
-        if (config.price_frozen) {
-          buyPrice = config.frozen_buy_price_ngn ?? 0;
-          sellPrice = config.frozen_sell_price_ngn ?? 0;
-        } else {
-          buyPrice = config.override_buy_price_ngn ?? 0;
-          sellPrice = config.override_sell_price_ngn ?? 0;
+      const cachedSubset: Record<string, CryptoPrice> = {};
+      for (const symbol of normalizedSymbols) {
+        if (priceCache.prices[symbol]) {
+          cachedSubset[symbol] = priceCache.prices[symbol];
         }
       }
-      finalPrices[sym] = {
-        crypto_symbol: sym,
-        price_usd: buyPrice > 0 ? buyPrice / USD_TO_NGN : 0,
-        price_ngn: buyPrice,
-        bid: sellPrice,
-        ask: buyPrice,
-        last_updated: now,
-      };
+      if (Object.keys(cachedSubset).length === normalizedSymbols.length) {
+        return { prices: cachedSubset, error: null };
+      }
     }
 
-    priceCache = { prices: finalPrices, timestamp: Date.now() };
-    return { prices: finalPrices, error: null };
+    const finalPrices: Record<string, CryptoPrice> = {};
+
+    // 1) Edge function: Alchemy + Luno
+    const marketResult = await fetchPricesFromLunoAPI(normalizedSymbols);
+    if (marketResult.prices) {
+      Object.assign(finalPrices, marketResult.prices);
+    }
+
+    // 2) Admin pricing-engine fallback for any symbols still missing.
+    const missingSymbols = normalizedSymbols.filter((symbol) => {
+      const price = finalPrices[symbol];
+      return !price || !price.price_ngn || price.price_ngn <= 0;
+    });
+
+    if (missingSymbols.length > 0) {
+      let configMap: Record<string, any> = {};
+      try {
+        const { getPricingEngineConfigsBatch } = await import('@/lib/admin-pricing-engine-service');
+        const configPromise = getPricingEngineConfigsBatch(missingSymbols);
+        const configTimeout = new Promise<Record<string, any>>((resolve) =>
+          setTimeout(() => resolve({}), 1500)
+        );
+        configMap = await Promise.race([configPromise, configTimeout]).catch(() => ({}));
+      } catch (e) {
+        console.warn('Pricing engine fallback unavailable:', e);
+      }
+
+      const USD_TO_NGN = 1650;
+      const now = new Date().toISOString();
+
+      for (const symbol of missingSymbols) {
+        const config = configMap[symbol];
+        let buyPrice = 0;
+        let sellPrice = 0;
+        if (config) {
+          if (config.price_frozen) {
+            buyPrice = config.frozen_buy_price_ngn ?? 0;
+            sellPrice = config.frozen_sell_price_ngn ?? 0;
+          } else {
+            buyPrice = config.override_buy_price_ngn ?? 0;
+            sellPrice = config.override_sell_price_ngn ?? 0;
+          }
+        }
+        finalPrices[symbol] = {
+          crypto_symbol: symbol,
+          price_usd: buyPrice > 0 ? buyPrice / USD_TO_NGN : 0,
+          price_ngn: buyPrice,
+          bid: sellPrice,
+          ask: buyPrice,
+          last_updated: now,
+        };
+      }
+    }
+
+    const now = new Date().toISOString();
+    for (const symbol of normalizedSymbols) {
+      if (!finalPrices[symbol]) {
+        finalPrices[symbol] = {
+          crypto_symbol: symbol,
+          price_usd: 0,
+          price_ngn: 0,
+          bid: 0,
+          ask: 0,
+          last_updated: now,
+        };
+      }
+    }
+
+    let batchConfigs: Record<string, Record<string, unknown> | null> = {};
+    try {
+      const { getPricingEngineConfigsBatch } = await import('@/lib/admin-pricing-engine-service');
+      const raw = await getPricingEngineConfigsBatch(normalizedSymbols).catch(() => ({}));
+      for (const sym of normalizedSymbols) {
+        const c = raw[sym];
+        batchConfigs[sym] = c ? (c as unknown as Record<string, unknown>) : null;
+      }
+    } catch {
+      batchConfigs = {};
+    }
+
+    const retailedPrices: Record<string, CryptoPrice> = {};
+    for (const symbol of normalizedSymbols) {
+      const engine = extractEngineBuySell(batchConfigs[symbol]);
+      retailedPrices[symbol] = applyRetailSpreadToRow(finalPrices[symbol], engine, symbol) as CryptoPrice;
+    }
+
+    priceCache = { prices: retailedPrices, timestamp: Date.now() };
+    return { prices: retailedPrices, error: marketResult.error ?? null };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.error('Error getting static rates:', msg);
+    console.error('Error getting market prices:', msg);
     return { prices: {}, error: msg || 'Failed to fetch prices' };
   }
 }

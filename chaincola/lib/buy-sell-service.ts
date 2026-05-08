@@ -1,5 +1,6 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 export interface BuyCryptoRequest {
   crypto_currency: string;  // BTC, ETH, USDT, USDC, XRP
@@ -106,7 +107,7 @@ export async function buyCrypto(request: BuyCryptoRequest): Promise<BuyCryptoRes
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -122,7 +123,8 @@ export async function buyCrypto(request: BuyCryptoRequest): Promise<BuyCryptoRes
     // Get Supabase anon key for API calls
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -211,6 +213,27 @@ export interface SendEthereumResponse {
   message?: string;
 }
 
+export interface SendBitcoinRequest {
+  destination_address: string;
+  amount_btc: string;
+}
+
+export interface SendUsdtRequest {
+  destination_address: string;
+  amount_usdt: string;
+}
+
+export interface SendUsdcRequest {
+  destination_address: string;
+  amount_usdc: string;
+}
+
+export interface SendXrpRequest {
+  destination_address: string;
+  amount_xrp: string;
+  destination_tag?: string;
+}
+
 
 /**
  * Store SOL private keys (encrypted) in the database
@@ -229,7 +252,7 @@ export async function storeSOLKeys(): Promise<{ success: boolean; address?: stri
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -242,7 +265,8 @@ export async function storeSOLKeys(): Promise<{ success: boolean; address?: stri
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -327,7 +351,7 @@ export async function storeETHKeys(): Promise<{ success: boolean; address?: stri
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -340,7 +364,8 @@ export async function storeETHKeys(): Promise<{ success: boolean; address?: stri
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -431,7 +456,7 @@ export async function sendEthereum(request: SendEthereumRequest): Promise<SendEt
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -447,7 +472,8 @@ export async function sendEthereum(request: SendEthereumRequest): Promise<SendEt
     // Get Supabase anon key for API calls
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -590,6 +616,80 @@ export async function sendEthereum(request: SendEthereumRequest): Promise<SendEt
   }
 }
 
+async function sendWithEdgeFunction<TRequest extends Record<string, unknown>>(
+  slug: string,
+  request: TRequest
+): Promise<SendEthereumResponse> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.EXPO_PUBLIC_SUPABASE_URL ||
+      SUPABASE_URL;
+
+    if (!supabaseUrl) {
+      return { success: false, error: 'Supabase URL not configured' };
+    }
+
+    const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+      SUPABASE_ANON_KEY;
+
+    if (!supabaseAnonKey) {
+      return { success: false, error: 'Supabase anon key not configured' };
+    }
+
+    const functionUrl = `${supabaseUrl}/functions/v1/${slug}`;
+    const response = await fetch(functionUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': supabaseAnonKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      const errorMessage = result?.error || result?.message || `HTTP ${response.status}`;
+      return { success: false, error: errorMessage };
+    }
+
+    return {
+      success: result?.success !== false,
+      transaction_hash: result?.transaction_hash,
+      amount: result?.amount,
+      fee: result?.fee || result?.network_fee || result?.total_fee,
+      error: result?.error,
+      message: result?.message,
+    };
+  } catch (error: any) {
+    return { success: false, error: error?.message || 'Failed to send transaction' };
+  }
+}
+
+export async function sendBitcoin(request: SendBitcoinRequest): Promise<SendEthereumResponse> {
+  return sendWithEdgeFunction('send-bitcoin-transaction', request);
+}
+
+export async function sendUsdt(request: SendUsdtRequest): Promise<SendEthereumResponse> {
+  return sendWithEdgeFunction('send-usdt-transaction', request);
+}
+
+export async function sendUsdc(request: SendUsdcRequest): Promise<SendEthereumResponse> {
+  return sendWithEdgeFunction('send-usdc-transaction', request);
+}
+
+export async function sendXrp(request: SendXrpRequest): Promise<SendEthereumResponse> {
+  return sendWithEdgeFunction('send-xrp-transaction', request);
+}
+
 /**
  * Get quote for selling BTC
  */
@@ -606,7 +706,7 @@ export async function getSellBtcQuote(request: SellCryptoRequest): Promise<SellC
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -619,7 +719,8 @@ export async function getSellBtcQuote(request: SellCryptoRequest): Promise<SellC
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -688,7 +789,7 @@ export async function executeSellBtc(sell_id: string): Promise<SellCryptoExecute
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -701,7 +802,8 @@ export async function executeSellBtc(sell_id: string): Promise<SellCryptoExecute
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -770,7 +872,7 @@ export async function getSellBtcStatus(sell_id: string): Promise<SellCryptoStatu
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                        process.env.NEXT_PUBLIC_SUPABASE_URL || 
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -783,7 +885,8 @@ export async function getSellBtcStatus(sell_id: string): Promise<SellCryptoStatu
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -850,7 +953,7 @@ export async function getSellEthQuote(request: { eth_amount: string }): Promise<
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -863,7 +966,8 @@ export async function getSellEthQuote(request: { eth_amount: string }): Promise<
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -932,7 +1036,7 @@ export async function executeSellEth(sell_id: string): Promise<SellCryptoExecute
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -945,7 +1049,8 @@ export async function executeSellEth(sell_id: string): Promise<SellCryptoExecute
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1014,7 +1119,7 @@ export async function getSellEthStatus(sell_id: string): Promise<SellCryptoStatu
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1027,7 +1132,8 @@ export async function getSellEthStatus(sell_id: string): Promise<SellCryptoStatu
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1094,7 +1200,7 @@ export async function getSellXrpQuote(request: { xrp_amount: string }): Promise<
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1107,7 +1213,8 @@ export async function getSellXrpQuote(request: { xrp_amount: string }): Promise<
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1176,7 +1283,7 @@ export async function executeSellXrp(sell_id: string): Promise<SellCryptoExecute
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1189,7 +1296,8 @@ export async function executeSellXrp(sell_id: string): Promise<SellCryptoExecute
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1258,7 +1366,7 @@ export async function getSellXrpStatus(sell_id: string): Promise<SellCryptoStatu
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1271,7 +1379,8 @@ export async function getSellXrpStatus(sell_id: string): Promise<SellCryptoStatu
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1338,7 +1447,7 @@ export async function getSellSolQuote(request: { sol_amount: string }): Promise<
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1351,7 +1460,8 @@ export async function getSellSolQuote(request: { sol_amount: string }): Promise<
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1420,7 +1530,7 @@ export async function executeSellSol(sell_id: string): Promise<SellCryptoExecute
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1433,7 +1543,8 @@ export async function executeSellSol(sell_id: string): Promise<SellCryptoExecute
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1502,7 +1613,7 @@ export async function getSellSolStatus(sell_id: string): Promise<SellCryptoStatu
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1515,7 +1626,8 @@ export async function getSellSolStatus(sell_id: string): Promise<SellCryptoStatu
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1585,7 +1697,7 @@ export async function instantSellCrypto(request: InstantSellRequest): Promise<In
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1598,7 +1710,8 @@ export async function instantSellCrypto(request: InstantSellRequest): Promise<In
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1683,7 +1796,7 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
                        process.env.NEXT_PUBLIC_SUPABASE_URL ||
                        process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
+                       SUPABASE_URL;
 
     if (!supabaseUrl) {
       return {
@@ -1696,7 +1809,8 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
 
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {
@@ -1810,7 +1924,10 @@ export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCrypto
       };
     }
 
-    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || process.env.EXPO_PUBLIC_SUPABASE_URL;
+    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
+                       process.env.NEXT_PUBLIC_SUPABASE_URL ||
+                       process.env.EXPO_PUBLIC_SUPABASE_URL ||
+                       SUPABASE_URL;
     if (!supabaseUrl) {
       return {
         success: false,
@@ -1819,7 +1936,10 @@ export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCrypto
     }
 
     const functionUrl = `${supabaseUrl}/functions/v1/swap-crypto`;
-    const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
+                           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+                           SUPABASE_ANON_KEY;
 
     if (!supabaseAnonKey) {
       return {

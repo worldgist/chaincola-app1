@@ -12,6 +12,7 @@ const BIOMETRIC_EMAIL_KEY = 'biometric_email';
 const BIOMETRIC_PASSWORD_KEY = 'biometric_password';
 const BIOMETRIC_ENABLED_KEY = (userId: string) => `biometric_enabled_${userId}`;
 const BIOMETRIC_TYPE_KEY = 'biometric_type';
+const BIOMETRIC_LOGIN_ENABLED_KEY = 'biometric_login_enabled';
 
 export interface BiometricAuthResult {
   success: boolean;
@@ -406,6 +407,17 @@ export async function signInWithBiometric(
   signInFunction: (email: string, password: string) => Promise<{ error: any }>
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // Hard gate: if user disabled biometric login, do not proceed even if credentials exist.
+    // This prevents edge cases where UI still shows the button or credentials weren't cleared.
+    const biometricLoginEnabled = await AsyncStorage.getItem(BIOMETRIC_LOGIN_ENABLED_KEY);
+    if (biometricLoginEnabled === 'false') {
+      await deleteBiometricCredentials().catch(() => {});
+      return {
+        success: false,
+        error: 'Biometric authentication is disabled. Enable it again in Profile to use biometric sign-in.',
+      };
+    }
+
     console.log('🔍 Checking for stored credentials...');
     
     // Check if credentials are stored

@@ -16,6 +16,29 @@ const USDC_CONTRACT_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'.toLow
 // Minimum confirmations required for Ethereum (typically 12 blocks)
 const MIN_CONFIRMATIONS = 12;
 
+function parseErc20Transfer(transfer: any, decimalsFallback = 6): { amount: number; raw: bigint; decimals: number } {
+  const decimals =
+    (typeof transfer?.rawContract?.decimal === 'number' ? transfer.rawContract.decimal : undefined) ??
+    (typeof transfer?.rawContract?.decimals === 'number' ? transfer.rawContract.decimals : undefined) ??
+    decimalsFallback;
+  const rawVal = transfer?.rawContract?.value;
+  try {
+    if (typeof rawVal === 'string' && rawVal.length > 0) {
+      const raw = rawVal.startsWith('0x') ? BigInt(rawVal) : BigInt(rawVal);
+      const amount = Number(raw) / Math.pow(10, decimals);
+      return { amount, raw, decimals };
+    }
+  } catch {
+    // fall through
+  }
+
+  // Fallback: Alchemy may include human-readable value in transfer.value
+  const amt = Number(transfer?.value || 0);
+  if (!Number.isFinite(amt) || amt <= 0) return { amount: 0, raw: 0n, decimals };
+  const raw = BigInt(Math.round(amt * Math.pow(10, decimals)));
+  return { amount: amt, raw, decimals };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -26,8 +49,18 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get Alchemy Ethereum API URL
-    const alchemyUrl = Deno.env.get('ALCHEMY_ETHEREUM_URL') || 'https://eth-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
+    // Get Alchemy Ethereum API URL (prefer full URL secret; fallback to API key secret)
+    const alchemyUrl =
+      Deno.env.get('ALCHEMY_ETHEREUM_URL') ||
+      (Deno.env.get('ALCHEMY_API_KEY')
+        ? `https://eth-mainnet.g.alchemy.com/v2/${Deno.env.get('ALCHEMY_API_KEY')}`
+        : '');
+    if (!alchemyUrl) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Missing ALCHEMY_ETHEREUM_URL or ALCHEMY_API_KEY secret' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
 
     // Get all active Ethereum wallet addresses (USDC uses ETH wallets)
     const { data: wallets, error: walletsError } = await supabase
@@ -110,9 +143,8 @@ serve(async (req) => {
           }
 
           const txHash = transfer.hash;
-          const amountRaw = transfer.value || '0';
-          const amountWei = BigInt(amountRaw);
-          const amountUsdc = Number(amountWei) / 1e6; // USDC has 6 decimals
+          const parsed = parseErc20Transfer(transfer, 6);
+          const amountUsdc = parsed.amount;
           const blockNumber = parseInt(transfer.blockNum || '0', 16);
           const confirmations = latestBlockNumber - blockNumber;
 
@@ -151,8 +183,10 @@ serve(async (req) => {
                 confirmations: confirmations,
                 metadata: {
                   detected_at: new Date().toISOString(),
-                  value_raw: amountRaw,
+                  value_raw: parsed.raw.toString(),
+                  token_decimals: parsed.decimals,
                   contract_address: USDC_CONTRACT_ADDRESS,
+                  credited: false,
                 },
               })
               .select()
@@ -166,6 +200,32 @@ serve(async (req) => {
 
             results.depositsFound++;
             console.log(`✅ New USDC deposit detected: ${amountUsdc} USDC (${confirmations} confirmations)`);
+
+            // Auto-credit when confirmed (idempotent)
+            if (status === 'CONFIRMED') {
+              const meta = insertedTx?.metadata || {};
+              if (meta.credited !== true) {
+                const { error: creditError } = await supabase.rpc('credit_crypto_wallet', {
+                  p_user_id: wallet.user_id,
+                  p_amount: amountUsdc,
+                  p_currency: 'USDC',
+                });
+                if (creditError) {
+                  console.error('❌ Error crediting USDC wallet:', creditError);
+                  results.errors.push(`Credit USDC failed for ${txHash}`);
+                } else {
+                  const updatedMeta = {
+                    ...meta,
+                    credited: true,
+                    credited_at: new Date().toISOString(),
+                    credited_amount: amountUsdc,
+                    credited_currency: 'USDC',
+                  };
+                  await supabase.from('transactions').update({ metadata: updatedMeta }).eq('id', insertedTx.id);
+                  console.log(`✅ Credited USDC wallet for ${wallet.user_id} (${amountUsdc} USDC)`);
+                }
+              }
+            }
 
             // STEP 3: Send notification AFTER conversion and recording
             await sendCryptoDepositNotification({
@@ -195,6 +255,32 @@ serve(async (req) => {
                 .from('transactions')
                 .update(updateData)
                 .eq('id', existingTx.id);
+            }
+
+            // Auto-credit when it flips to CONFIRMED (idempotent)
+            if (status === 'CONFIRMED') {
+              const meta = existingTx.metadata || {};
+              if (meta.credited !== true) {
+                const { error: creditError } = await supabase.rpc('credit_crypto_wallet', {
+                  p_user_id: wallet.user_id,
+                  p_amount: amountUsdc,
+                  p_currency: 'USDC',
+                });
+                if (creditError) {
+                  console.error('❌ Error crediting USDC wallet:', creditError);
+                  results.errors.push(`Credit USDC failed for ${txHash}`);
+                } else {
+                  const updatedMeta = {
+                    ...meta,
+                    credited: true,
+                    credited_at: new Date().toISOString(),
+                    credited_amount: amountUsdc,
+                    credited_currency: 'USDC',
+                  };
+                  await supabase.from('transactions').update({ metadata: updatedMeta }).eq('id', existingTx.id);
+                  console.log(`✅ Credited USDC wallet for ${wallet.user_id} (${amountUsdc} USDC)`);
+                }
+              }
             }
           }
         }

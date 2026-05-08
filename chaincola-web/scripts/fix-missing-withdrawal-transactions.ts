@@ -28,10 +28,11 @@ for (const envPath of envPaths) {
   }
 }
 
-// Try to get Supabase URL from multiple sources
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL 
-  || process.env.EXPO_PUBLIC_SUPABASE_URL 
-  || 'https://slleojsdpctxhlsoyenr.supabase.co';
+// Try to get Supabase URL from multiple sources (default = current production project)
+const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.EXPO_PUBLIC_SUPABASE_URL ||
+  'https://woyvzsysasgvpigaflul.supabase.co';
 
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';

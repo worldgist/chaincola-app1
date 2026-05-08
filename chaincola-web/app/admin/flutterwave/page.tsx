@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -8,6 +8,8 @@ interface FlutterwaveBalance {
   available_balance: number;
   ledger_balance: number;
   currency: string;
+  note?: string;
+  error?: string;
 }
 
 interface FlutterwaveTransaction {
@@ -67,7 +69,8 @@ export default function FlutterwaveManagementPage() {
   const fetchFlutterwaveData = async (page: number = 1, filterParams?: typeof filters) => {
     try {
       setLoading(true);
-      
+      const f = filterParams ?? filters;
+
       // Get Supabase session
       const { createClient } = await import('@/lib/supabase/client');
       const supabase = createClient();
@@ -118,7 +121,6 @@ export default function FlutterwaveManagementPage() {
             available_balance: 0,
             ledger_balance: 0,
             currency: 'NGN',
-            error: balanceResult.error,
           });
         } else {
           console.warn('Balance fetch returned unexpected format:', balanceResult);
@@ -129,16 +131,16 @@ export default function FlutterwaveManagementPage() {
         setError(`Failed to fetch balance (${balanceResponse.status})`);
       }
 
-      // Fetch transactions
+      // Fetch transactions (use `f` so Apply Filters uses current values, not stale state)
       let transactionsUrl = `${functionUrl}?action=transactions&page=${page}&per_page=50`;
-      if (filters.status) {
-        transactionsUrl += `&status=${filters.status}`;
+      if (f.status) {
+        transactionsUrl += `&status=${encodeURIComponent(f.status)}`;
       }
-      if (filters.from) {
-        transactionsUrl += `&from=${filters.from}`;
+      if (f.from) {
+        transactionsUrl += `&from=${encodeURIComponent(f.from)}`;
       }
-      if (filters.to) {
-        transactionsUrl += `&to=${filters.to}`;
+      if (f.to) {
+        transactionsUrl += `&to=${encodeURIComponent(f.to)}`;
       }
 
       const transactionsResponse = await fetch(transactionsUrl, {
@@ -625,9 +627,8 @@ export default function FlutterwaveManagementPage() {
                         </tr>
                       ) : (
                         transactions.map((tx) => (
-                          <>
+                          <Fragment key={tx.id}>
                             <tr 
-                              key={tx.id} 
                               className="hover:bg-gray-50 cursor-pointer"
                               onClick={() => toggleTransactionExpansion(tx.id)}
                             >
@@ -731,7 +732,7 @@ export default function FlutterwaveManagementPage() {
                                 </td>
                               </tr>
                             )}
-                          </>
+                          </Fragment>
                         ))
                       )}
                     </tbody>

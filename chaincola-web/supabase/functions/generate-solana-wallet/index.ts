@@ -15,6 +15,8 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Keypair } from "@solana/web3.js";
+import { bytesToBase64 } from "../_shared/bytes-to-base64.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -90,8 +92,7 @@ async function encryptPrivateKey(privateKey: string, encryptionKey: string): Pro
     combined.set(iv, salt.length);
     combined.set(new Uint8Array(encrypted), salt.length + iv.length);
 
-    // Return as base64 string
-    const base64Result = btoa(String.fromCharCode(...combined));
+    const base64Result = bytesToBase64(combined);
     
     if (!base64Result || base64Result.length === 0) {
       throw new Error('Base64 encoding returned empty result');
@@ -101,13 +102,14 @@ async function encryptPrivateKey(privateKey: string, encryptionKey: string): Pro
     return base64Result;
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const err = error instanceof Error ? error : undefined;
     console.error('❌ Error encrypting private key:', errorMessage);
     console.error('   Error details:', {
-      message: error.message,
-      name: error.name,
-      stack: error.stack?.substring(0, 500),
+      message: err?.message,
+      name: err?.name,
+      stack: err?.stack?.substring(0, 500),
     });
-    throw new Error(`Failed to encrypt private key: ${error.message || 'Unknown error'}`);
+    throw new Error(`Failed to encrypt private key: ${errorMessage || 'Unknown error'}`);
   }
 }
 
@@ -217,16 +219,6 @@ serve(async (req: Request) => {
     // ============================================================
     console.log(`🔑 Generating new SOL wallet for user ${targetUserId} on ${network}...`);
 
-    // Import Solana Web3.js
-    const solanaModule = await import("https://esm.sh/@solana/web3.js@1.87.6");
-    const Keypair = solanaModule.Keypair || solanaModule.default?.Keypair;
-    // Connection is imported but not used in this function (kept for potential future use)
-    const _Connection = solanaModule.Connection || solanaModule.default?.Connection;
-    
-    if (!Keypair) {
-      throw new Error('Solana Keypair not found in module');
-    }
-    
     // Generate a new keypair
     const keypair = Keypair.generate();
     
@@ -268,19 +260,23 @@ serve(async (req: Request) => {
     // Encryption uses AES-256-GCM with PBKDF2 key derivation.
     // ============================================================
     
-    // Get encryption key from Supabase Secrets
-    // Priority: SOL_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const encryptionKey = Deno.env.get('SOL_ENCRYPTION_KEY') ||
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                         Deno.env.get('ETH_ENCRYPTION_KEY');
+    const encryptionKey =
+      Deno.env.get("CRYPTO_ENCRYPTION_KEY") ||
+      Deno.env.get("SOL_ENCRYPTION_KEY") ||
+      Deno.env.get("ETH_ENCRYPTION_KEY") ||
+      Deno.env.get("BTC_ENCRYPTION_KEY") ||
+      Deno.env.get("TRON_ENCRYPTION_KEY");
 
     if (!encryptionKey) {
-      console.error('❌ SOL_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY not set in Supabase secrets');
-      throw new Error('Encryption key not configured. Please set SOL_ENCRYPTION_KEY, CRYPTO_ENCRYPTION_KEY, or ETH_ENCRYPTION_KEY in Supabase secrets.');
+      console.error(
+        "❌ No wallet encryption secret: set CRYPTO_ENCRYPTION_KEY or SOL_ENCRYPTION_KEY in Edge Function secrets",
+      );
+      throw new Error(
+        "Encryption key not configured. Supabase → Project Settings → Edge Functions → Secrets: add CRYPTO_ENCRYPTION_KEY (recommended) or SOL_ENCRYPTION_KEY.",
+      );
     }
 
     console.log(`🔐 Encrypting SOL private key...`);
-    console.log(`   Using encryption key: ${Deno.env.get('SOL_ENCRYPTION_KEY') ? 'SOL_ENCRYPTION_KEY' : Deno.env.get('CRYPTO_ENCRYPTION_KEY') ? 'CRYPTO_ENCRYPTION_KEY' : 'ETH_ENCRYPTION_KEY'}`);
 
     let encryptedPrivateKey: string;
     try {
@@ -339,7 +335,7 @@ serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'Failed to generate SOL wallet',
+        error: errorMessage || 'Failed to generate SOL wallet',
       }),
       {
         status: 500,

@@ -150,11 +150,11 @@ export async function isPINSetup(userId: string): Promise<boolean> {
   try {
     if (!userId) return false;
 
-    // Check local SecureStore first
-    const localSetup = await SecureStore.getItemAsync(PIN_SETUP_KEY(userId));
-    if (localSetup === 'true') {
-      const hash = await SecureStore.getItemAsync(PIN_HASH_STORAGE_KEY(userId));
-      if (hash) return true;
+    // Hash in SecureStore is authoritative (setup flag can be missing after restore/cache quirks)
+    const localHash = await SecureStore.getItemAsync(PIN_HASH_STORAGE_KEY(userId));
+    if (localHash) {
+      await SecureStore.setItemAsync(PIN_SETUP_KEY(userId), 'true');
+      return true;
     }
 
     // Check Supabase

@@ -1,14 +1,14 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  StyleSheet,
-  View,
-  TextInput,
-  TouchableOpacity,
+  ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
-  Modal,
-  ActivityIndicator,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -16,342 +16,270 @@ import { router } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
-import { verifyPINInput, savePIN, isPINSetup } from '@/lib/pin-service';
+import { isPINSetup, savePIN, verifyPINInput } from '@/lib/pin-service';
+
+function sanitizePin(v: string): string {
+  return v.replace(/[^0-9]/g, '').slice(0, 4);
+}
 
 export default function ChangePinScreen() {
   const { user } = useAuth();
-  const [currentPin, setCurrentPin] = useState(['', '', '', '']);
-  const [newPin, setNewPin] = useState(['', '', '', '']);
-  const [confirmPin, setConfirmPin] = useState(['', '', '', '']);
-  const [step, setStep] = useState<'current' | 'new' | 'confirm'>('current');
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [loading, setLoading] = useState(false);
   const [checkingPin, setCheckingPin] = useState(true);
   const [hasPin, setHasPin] = useState(false);
   const [isSettingUp, setIsSettingUp] = useState(false);
   const [wasSettingUp, setWasSettingUp] = useState(false);
-  
-  const currentPinRefs = useRef<(TextInput | null)[]>([]);
-  const newPinRefs = useRef<(TextInput | null)[]>([]);
-  const confirmPinRefs = useRef<(TextInput | null)[]>([]);
+
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+
+  const [showCurrentPin, setShowCurrentPin] = useState(false);
+  const [showNewPin, setShowNewPin] = useState(false);
+  const [showConfirmPin, setShowConfirmPin] = useState(false);
+
+  const [errorMessage, setErrorMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [showWrongPinModal, setShowWrongPinModal] = useState(false);
+  const [wrongPinMessage, setWrongPinMessage] = useState('');
 
   useEffect(() => {
-    const checkPinExists = async () => {
+    const run = async () => {
       if (!user?.id) {
         setCheckingPin(false);
         return;
       }
-
       try {
-        const pinExists = await isPINSetup(user.id);
-        setHasPin(pinExists);
-        setIsSettingUp(!pinExists);
-        // If no PIN exists, start with 'new' step instead of 'current'
-        if (!pinExists) {
-          setStep('new');
-          // Auto-focus on the first PIN input after a short delay
-          setTimeout(() => {
-            newPinRefs.current[0]?.focus();
-          }, 300);
-        }
-      } catch (error) {
-        console.error('Error checking PIN:', error);
+        const exists = await isPINSetup(user.id);
+        setHasPin(exists);
+        setIsSettingUp(!exists);
+        setCurrentPin('');
+        setNewPin('');
+        setConfirmPin('');
       } finally {
         setCheckingPin(false);
       }
     };
-
-    checkPinExists();
+    void run();
   }, [user?.id]);
 
-  const handlePinChange = async (text: string, index: number, type: 'current' | 'new' | 'confirm') => {
-    const numericText = text.replace(/[^0-9]/g, '');
-    setErrorMessage('');
-    
-    if (type === 'current') {
-      const newPin = [...currentPin];
-      newPin[index] = numericText;
-      setCurrentPin(newPin);
-      if (numericText && index < 3) {
-        currentPinRefs.current[index + 1]?.focus();
-      } else if (numericText && index === 3) {
-        // All digits entered, verify current PIN
-        const enteredPin = newPin.join('');
-        if (!user?.id) {
-          setErrorMessage('User not found. Please sign in again.');
-          setCurrentPin(['', '', '', '']);
-          currentPinRefs.current[0]?.focus();
-          return;
-        }
-        
-        setLoading(true);
-        const verifyResult = await verifyPINInput(user.id, enteredPin);
-        if (verifyResult.success) {
-          setStep('new');
-          setTimeout(() => newPinRefs.current[0]?.focus(), 100);
-        } else {
-          setErrorMessage(verifyResult.error || 'Incorrect PIN. Please try again.');
-          setCurrentPin(['', '', '', '']);
-          currentPinRefs.current[0]?.focus();
-        }
-        setLoading(false);
-      }
-    } else if (type === 'new') {
-      const newPinArray = [...newPin];
-      newPinArray[index] = numericText;
-      setNewPin(newPinArray);
-      if (numericText && index < 3) {
-        newPinRefs.current[index + 1]?.focus();
-      } else if (numericText && index === 3) {
-        setStep('confirm');
-        setTimeout(() => confirmPinRefs.current[0]?.focus(), 100);
-      }
-    } else {
-      const newConfirmPin = [...confirmPin];
-      newConfirmPin[index] = numericText;
-      setConfirmPin(newConfirmPin);
-      if (numericText && index < 3) {
-        confirmPinRefs.current[index + 1]?.focus();
-      } else if (numericText && index === 3) {
-        // Check if PINs match
-        const finalNewPin = newPin.join('');
-        const finalConfirmPin = newConfirmPin.join('');
-        if (finalNewPin === finalConfirmPin) {
-          await handleSave();
-        } else {
-          // PINs don't match, reset
-          setErrorMessage('PINs do not match. Please try again.');
-          setConfirmPin(['', '', '', '']);
-          confirmPinRefs.current[0]?.focus();
-        }
-      }
-    }
-  };
-
   const handleSave = async () => {
+    setErrorMessage('');
     if (!user?.id) {
       setErrorMessage('User not found. Please sign in again.');
       return;
     }
 
-    const finalNewPin = newPin.join('');
-    if (finalNewPin.length !== 4) {
-      setErrorMessage('PIN must be 4 digits.');
+    const cur = sanitizePin(currentPin);
+    const next = sanitizePin(newPin);
+    const conf = sanitizePin(confirmPin);
+
+    if (!isSettingUp && cur.length !== 4) {
+      setErrorMessage('Please enter your current 4-digit PIN.');
       return;
     }
-
-    // Validate PIN is not all the same digit
-    if (finalNewPin.split('').every(digit => digit === finalNewPin[0])) {
+    if (next.length !== 4) {
+      setErrorMessage('Please enter a new 4-digit PIN.');
+      return;
+    }
+    if (next !== conf) {
+      setErrorMessage('PINs do not match.');
+      return;
+    }
+    if (!isSettingUp && cur === next) {
+      setErrorMessage('New PIN must be different from current PIN.');
+      return;
+    }
+    if (next.split('').every((d) => d === next[0])) {
       setErrorMessage('PIN cannot be all the same digit. Please choose a different PIN.');
       return;
     }
 
     setLoading(true);
-    setErrorMessage('');
-    
     try {
-      const result = await savePIN(user.id, finalNewPin);
-      if (result.success) {
-        // Store whether we were setting up for the modal
-        setWasSettingUp(isSettingUp);
-        
-        // Clear all PIN inputs
-        setCurrentPin(['', '', '', '']);
-        setNewPin(['', '', '', '']);
-        setConfirmPin(['', '', '', '']);
-        setStep(isSettingUp ? 'new' : 'current');
-        // Update hasPin state if we just set up a PIN
-        if (isSettingUp) {
-          setHasPin(true);
-          setIsSettingUp(false);
+      if (!isSettingUp) {
+        const verify = await verifyPINInput(user.id, cur);
+        if (!verify.success) {
+          const msg = verify.error || 'Current PIN is incorrect. Please try again.';
+          setWrongPinMessage(msg);
+          setShowWrongPinModal(true);
+          setLoading(false);
+          return;
         }
-        setShowSuccessModal(true);
-      } else {
-        setErrorMessage(result.error || 'Failed to save PIN. Please try again.');
       }
-    } catch (error: any) {
-      console.error('Error saving PIN:', error);
-      setErrorMessage(error.message || 'An error occurred. Please try again.');
+
+      const result = await savePIN(user.id, next);
+      if (!result.success) {
+        setErrorMessage(result.error || 'Failed to save PIN. Please try again.');
+        setLoading(false);
+        return;
+      }
+
+      setWasSettingUp(isSettingUp);
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmPin('');
+      if (isSettingUp) {
+        setHasPin(true);
+        setIsSettingUp(false);
+      }
+      setShowSuccessModal(true);
+    } catch (e: any) {
+      setErrorMessage(e?.message || 'An error occurred. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCloseModal = () => {
+  const handleCloseSuccessModal = () => {
     setShowSuccessModal(false);
     router.back();
   };
 
-  const renderPinInputs = (pin: string[], refs: any[], type: 'current' | 'new' | 'confirm') => {
-    return (
-      <View style={styles.pinContainer}>
-        {pin.map((digit, index) => (
-          <TextInput
-            key={index}
-            ref={(ref) => { refs[index] = ref; }}
-            style={[styles.pinInput, digit !== '' && styles.pinInputFilled]}
-            value={digit}
-            onChangeText={(text) => handlePinChange(text, index, type)}
-            keyboardType="number-pad"
-            maxLength={1}
-            selectTextOnFocus
-            secureTextEntry
-          />
-        ))}
-      </View>
-    );
+  const handleCloseWrongPinModal = () => {
+    setShowWrongPinModal(false);
+    setWrongPinMessage('');
   };
 
   return (
     <ThemedView style={styles.container}>
-      <KeyboardAvoidingView
-        style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
+      <KeyboardAvoidingView style={styles.keyboardView} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <View style={styles.header}>
-            <TouchableOpacity
-              style={styles.backButton}
-              onPress={() => router.back()}
-            >
+            <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
               <MaterialIcons name="arrow-back" size={24} color="#11181C" />
             </TouchableOpacity>
-            <ThemedText style={styles.headerTitle}>
-              {isSettingUp ? 'Set Up PIN' : 'Change PIN'}
-            </ThemedText>
+            <ThemedText style={styles.headerTitle}>{isSettingUp ? 'Set Up PIN' : 'Change PIN'}</ThemedText>
             <View style={styles.placeholder} />
           </View>
 
-          <View style={styles.content}>
-            {checkingPin ? (
-              <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#6B46C1" />
-                <ThemedText style={styles.loadingText}>Checking PIN status...</ThemedText>
-              </View>
-            ) : (
-              <>
-                {step === 'current' && hasPin && (
-                  <View style={styles.stepContainer}>
-                    <ThemedText style={styles.stepTitle}>Enter Current PIN</ThemedText>
-                    <ThemedText style={styles.stepSubtitle}>
-                      Enter your current 4-digit PIN to continue
-                    </ThemedText>
-                    {renderPinInputs(currentPin, currentPinRefs.current, 'current')}
-                    {loading && (
-                      <View style={styles.loadingContainer}>
-                        <ActivityIndicator size="small" color="#6B46C1" />
-                      </View>
-                    )}
-                    {errorMessage ? (
-                      <ThemedText style={styles.errorText}>{errorMessage}</ThemedText>
-                    ) : null}
-                  </View>
-                )}
-
-                {step === 'new' && (
-                  <View style={styles.stepContainer}>
-                    <ThemedText style={styles.stepTitle}>
-                      {isSettingUp ? 'Create PIN' : 'Create New PIN'}
-                    </ThemedText>
-                    <ThemedText style={styles.stepSubtitle}>
-                      {isSettingUp 
-                        ? 'Enter a 4-digit PIN to secure your account'
-                        : 'Enter a new 4-digit PIN'
-                      }
-                    </ThemedText>
-                    {renderPinInputs(newPin, newPinRefs.current, 'new')}
-                    {hasPin && (
-                      <TouchableOpacity
-                        style={styles.backStepButton}
-                        onPress={() => {
-                          setStep('current');
-                          setNewPin(['', '', '', '']);
-                        }}
-                      >
-                        <ThemedText style={styles.backStepText}>Back</ThemedText>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
-
-                {step === 'confirm' && (
-                  <View style={styles.stepContainer}>
-                    <ThemedText style={styles.stepTitle}>
-                      {isSettingUp ? 'Confirm PIN' : 'Confirm New PIN'}
-                    </ThemedText>
-                    <ThemedText style={styles.stepSubtitle}>
-                      {isSettingUp
-                        ? 'Re-enter your 4-digit PIN to confirm'
-                        : 'Re-enter your new 4-digit PIN to confirm'
-                      }
-                    </ThemedText>
-                    {renderPinInputs(confirmPin, confirmPinRefs.current, 'confirm')}
-                    {loading && (
-                      <View style={styles.loadingContainer}>
-                        <ActivityIndicator size="small" color="#6B46C1" />
-                      </View>
-                    )}
-                    {errorMessage ? (
-                      <ThemedText style={styles.errorText}>{errorMessage}</ThemedText>
-                    ) : null}
-                    <TouchableOpacity
-                      style={styles.backStepButton}
-                      onPress={() => {
-                        setStep('new');
-                        setConfirmPin(['', '', '', '']);
+          {checkingPin ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#6B46C1" />
+              <ThemedText style={styles.loadingText}>Checking PIN status...</ThemedText>
+            </View>
+          ) : (
+            <View style={styles.form}>
+              {!isSettingUp && hasPin ? (
+                <View style={styles.inputContainer}>
+                  <ThemedText style={styles.label}>Current PIN</ThemedText>
+                  <View style={styles.pinInputContainer}>
+                    <TextInput
+                      style={styles.pinTextInput}
+                      placeholder="Enter your current 4-digit PIN"
+                      placeholderTextColor="#9CA3AF"
+                      value={currentPin}
+                      onChangeText={(t) => {
+                        setCurrentPin(sanitizePin(t));
                         setErrorMessage('');
-                        newPinRefs.current[3]?.focus();
                       }}
-                    >
-                      <ThemedText style={styles.backStepText}>Back</ThemedText>
+                      keyboardType="number-pad"
+                      maxLength={4}
+                      secureTextEntry={!showCurrentPin}
+                      editable={!loading}
+                    />
+                    <TouchableOpacity style={styles.eyeButton} onPress={() => setShowCurrentPin((v) => !v)}>
+                      <MaterialIcons name={showCurrentPin ? 'visibility' : 'visibility-off'} size={20} color="#9CA3AF" />
                     </TouchableOpacity>
                   </View>
-                )}
-              </>
-            )}
+                </View>
+              ) : null}
 
-          </View>
+              <View style={styles.inputContainer}>
+                <ThemedText style={styles.label}>{isSettingUp ? 'Create PIN' : 'New PIN'}</ThemedText>
+                <View style={styles.pinInputContainer}>
+                  <TextInput
+                    style={styles.pinTextInput}
+                    placeholder="Enter your new 4-digit PIN"
+                    placeholderTextColor="#9CA3AF"
+                    value={newPin}
+                    onChangeText={(t) => {
+                      setNewPin(sanitizePin(t));
+                      setErrorMessage('');
+                    }}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                    secureTextEntry={!showNewPin}
+                    editable={!loading}
+                  />
+                  <TouchableOpacity style={styles.eyeButton} onPress={() => setShowNewPin((v) => !v)}>
+                    <MaterialIcons name={showNewPin ? 'visibility' : 'visibility-off'} size={20} color="#9CA3AF" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputContainer}>
+                <ThemedText style={styles.label}>{isSettingUp ? 'Confirm PIN' : 'Confirm New PIN'}</ThemedText>
+                <View style={styles.pinInputContainer}>
+                  <TextInput
+                    style={styles.pinTextInput}
+                    placeholder="Confirm your new 4-digit PIN"
+                    placeholderTextColor="#9CA3AF"
+                    value={confirmPin}
+                    onChangeText={(t) => {
+                      setConfirmPin(sanitizePin(t));
+                      setErrorMessage('');
+                    }}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                    secureTextEntry={!showConfirmPin}
+                    editable={!loading}
+                  />
+                  <TouchableOpacity style={styles.eyeButton} onPress={() => setShowConfirmPin((v) => !v)}>
+                    <MaterialIcons name={showConfirmPin ? 'visibility' : 'visibility-off'} size={20} color="#9CA3AF" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {errorMessage ? (
+                <View style={styles.errorContainerInline}>
+                  <ThemedText style={styles.errorTextInline}>{errorMessage}</ThemedText>
+                </View>
+              ) : null}
+
+              <TouchableOpacity style={[styles.saveButton, loading && styles.saveButtonDisabled]} onPress={handleSave} activeOpacity={0.8} disabled={loading}>
+                <LinearGradient colors={loading ? ['#9CA3AF', '#9CA3AF'] : ['#6B46C1', '#9333EA']} style={styles.saveButtonGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                  {loading ? <ActivityIndicator size="small" color="#FFFFFF" /> : <ThemedText style={styles.saveButtonText}>{isSettingUp ? 'Save PIN' : 'Change PIN'}</ThemedText>}
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
 
       {/* Success Modal */}
-      <Modal
-        visible={showSuccessModal}
-        transparent
-        animationType="fade"
-        onRequestClose={handleCloseModal}
-      >
+      <Modal visible={showSuccessModal} transparent animationType="fade" onRequestClose={handleCloseSuccessModal}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.successIconContainer}>
               <MaterialIcons name="check-circle" size={64} color="#10B981" />
             </View>
-            <ThemedText style={styles.modalTitle}>
-              {wasSettingUp ? 'PIN Set Up!' : 'PIN Changed!'}
-            </ThemedText>
+            <ThemedText style={styles.modalTitle}>{wasSettingUp ? 'PIN Set Up!' : 'PIN Changed!'}</ThemedText>
             <ThemedText style={styles.modalMessage}>
-              {wasSettingUp
-                ? 'Your PIN has been set up successfully'
-                : 'Your PIN has been updated successfully'
-              }
+              {wasSettingUp ? 'Your PIN has been set up successfully' : 'Your PIN has been updated successfully'}
             </ThemedText>
-            <TouchableOpacity
-              style={styles.modalButton}
-              onPress={handleCloseModal}
-              activeOpacity={0.8}
-            >
-              <LinearGradient
-                colors={['#6B46C1', '#9333EA']}
-                style={styles.modalButtonGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-              >
+            <TouchableOpacity style={styles.modalButton} onPress={handleCloseSuccessModal} activeOpacity={0.8}>
+              <LinearGradient colors={['#6B46C1', '#9333EA']} style={styles.modalButtonGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
                 <ThemedText style={styles.modalButtonText}>OK</ThemedText>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Wrong PIN Modal */}
+      <Modal visible={showWrongPinModal} transparent animationType="fade" onRequestClose={handleCloseWrongPinModal}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.errorIconContainer}>
+              <MaterialIcons name="error-outline" size={64} color="#EF4444" />
+            </View>
+            <ThemedText style={styles.modalTitle}>Wrong PIN</ThemedText>
+            <ThemedText style={styles.modalMessage}>{wrongPinMessage || 'Incorrect PIN. Please try again.'}</ThemedText>
+            <TouchableOpacity style={styles.modalButton} onPress={handleCloseWrongPinModal} activeOpacity={0.8}>
+              <LinearGradient colors={['#EF4444', '#DC2626']} style={styles.modalButtonGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                <ThemedText style={styles.modalButtonText}>Try Again</ThemedText>
               </LinearGradient>
             </TouchableOpacity>
           </View>
@@ -399,6 +327,72 @@ const styles = StyleSheet.create({
   },
   content: {
     width: '100%',
+  },
+  form: {
+    gap: 18,
+    width: '100%',
+  },
+  inputContainer: {
+    width: '100%',
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#11181C',
+  },
+  pinInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  pinTextInput: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#11181C',
+    letterSpacing: 6,
+  },
+  eyeButton: {
+    padding: 6,
+    marginLeft: 8,
+  },
+  errorContainerInline: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  errorTextInline: {
+    color: '#B91C1C',
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  saveButton: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    width: '100%',
+    marginTop: 4,
+  },
+  saveButtonDisabled: {
+    opacity: 0.7,
+  },
+  saveButtonGradient: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+  },
+  saveButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   stepContainer: {
     alignItems: 'center',
@@ -448,6 +442,27 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#6B46C1',
     fontWeight: '600',
+  },
+  primaryButton: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+    marginTop: 8,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.7,
+  },
+  primaryButtonGradient: {
+    paddingVertical: 16,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 14,
+  },
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   loadingContainer: {
     marginTop: 16,
@@ -501,6 +516,9 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   successIconContainer: {
+    marginBottom: 16,
+  },
+  errorIconContainer: {
     marginBottom: 16,
   },
   modalTitle: {

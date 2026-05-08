@@ -29,6 +29,8 @@ Thumbs.db
 # Env files
 .env
 .env.local
+.temp/*secrets*.env
+.temp/flutterwave-secrets.env
 .env.development.local
 .env.test.local
 .env.production.local
@@ -53,6 +55,14 @@ public/.DS_Store
 
 # Mac
 .DS_Store
+
+# Local Supabase pg_dump outputs (scripts/supabase-backup.ps1)
+supabase-backups/
+*.dump
+
+# Pasted exports with PII / hash_pin (keep local only)
+scripts/data/*-import.sql
+scripts/data/*-export.sql
 
 # Secrets
 *.pem

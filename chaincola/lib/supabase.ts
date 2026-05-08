@@ -2,19 +2,20 @@ import 'react-native-get-random-values';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import { SUPABASE_ANON_KEY, SUPABASE_URL, SUPABASE_PROJECT_REF } from '@/constants/supabase';
 
 // Get Supabase URL and anon key from environment variables
 // Use same environment variable names as website (NEXT_PUBLIC_*) for shared backend
-// Priority: Constants.expoConfig.extra > process.env (for runtime)
+// Priority: Constants.expoConfig.extra > process.env (for runtime) > constants/supabase.json
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     SUPABASE_URL;
                      
 const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                         process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                        SUPABASE_ANON_KEY;
 
 // Debug logging (only in development)
 if (__DEV__) {
@@ -27,7 +28,7 @@ if (__DEV__) {
 if (!supabaseAnonKey || supabaseAnonKey === '' || supabaseAnonKey === 'placeholder-key') {
   console.error('❌ Supabase anon key not set. Connection will fail.');
   console.error('Please set NEXT_PUBLIC_SUPABASE_ANON_KEY (or EXPO_PUBLIC_SUPABASE_ANON_KEY) in your .env file or app.config.js');
-  console.error('Get your key from: https://app.supabase.com/project/slleojsdpctxhlsoyenr/settings/api');
+  console.error(`Get your key from: https://app.supabase.com/project/${SUPABASE_PROJECT_REF}/settings/api`);
 }
 
 export const supabase = createClient(
@@ -50,7 +51,9 @@ export const supabase = createClient(
         const controller = new AbortController();
         // Use longer timeout for storage operations (file uploads)
         const isStorageOperation = url.includes('/storage/v1/') || url.includes('/storage/v1/object/');
-        const timeout = isStorageOperation ? 60000 : 30000; // 60s for storage, 30s for others
+        const isRestQuery = url.includes('/rest/v1/');
+        // PostgREST + tunnel / slow mobile: 30s aborts were causing DOMException "AbortError" on wallet loads
+        const timeout = isStorageOperation ? 60000 : isRestQuery ? 55000 : 30000;
         const timeoutId = setTimeout(() => controller.abort(), timeout);
         
         return fetch(url, {

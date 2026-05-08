@@ -72,7 +72,8 @@ export default function TransactionsPage() {
       
       // Debug: Log failed transactions count
       if (statusFilter === 'failed' && response.success && response.data) {
-        const transactionsArray = response.data.transactions || response.data || [];
+        const raw = response.data as { transactions?: unknown[] } | unknown[] | undefined;
+        const transactionsArray = Array.isArray(raw) ? raw : raw?.transactions ?? [];
         const failedCount = transactionsArray.filter((tx: any) => 
           (tx.status || '').toLowerCase() === 'failed'
         ).length;
@@ -81,7 +82,8 @@ export default function TransactionsPage() {
 
       if (response.success && response.data) {
         // Get transactions array - support both old and new structure
-        const transactionsArray = response.data.transactions || response.data || [];
+        const raw = response.data as { transactions?: unknown[] } | unknown[] | undefined;
+        const transactionsArray = Array.isArray(raw) ? raw : raw?.transactions ?? [];
         
         // Transform API transactions to display format
         const displayTransactions: DisplayTransaction[] = transactionsArray.map((tx: any) => {
@@ -164,7 +166,8 @@ export default function TransactionsPage() {
         });
         
         // Support both old and new pagination structure
-        const pagination = response.data?.pagination || response.pagination;
+        const pagSource = response.data as { pagination?: { total?: number; pages?: number; page?: number } } | undefined;
+        const pagination = pagSource?.pagination || response.pagination;
         setTotal(pagination?.total || response.total || 0);
         setTotalPages(pagination?.pages || response.pages || 1);
         setPage(pagination?.page || response.page || 1);
@@ -198,24 +201,12 @@ export default function TransactionsPage() {
     try {
       const response = await transactionsApi.getTransactionStats();
       if (response.success && response.data) {
-        // Calculate revenue from completed transactions
-        const allTransactions = await transactionsApi.getTransactions({
-          page: 1,
-          limit: 1000,
-          status_filter: 'completed',
+        const feeRev = response.data.fee_revenue_ngn ?? 0;
+        setStats({
+          total: response.data.total,
+          revenue: feeRev,
+          pending: response.data.by_status.pending,
         });
-
-        if (allTransactions.success && allTransactions.data) {
-          const revenue = allTransactions.data.reduce((sum, tx) => {
-            return sum + (tx.fee || 0);
-          }, 0);
-
-          setStats({
-            total: response.data.total,
-            revenue,
-            pending: response.data.by_status.pending,
-          });
-        }
       }
     } catch (error) {
       console.error('Error fetching stats:', error);
@@ -561,11 +552,15 @@ export default function TransactionsPage() {
                           </td>
                           <td className="px-4 py-2 text-gray-600">{log.target_email || '-'}</td>
                           <td className="px-4 py-2 text-gray-600 max-w-xs truncate" title={JSON.stringify(log.action_details)}>
-                            {log.action_details?.transaction_id && `Tx: ${String(log.action_details.transaction_id).slice(0, 8)}...`}
-                            {log.action_details?.refund_amount != null && ` • ${log.action_details.refund_amount} ${log.action_details.refund_currency || ''}`}
-                            {log.action_details?.old_status && log.action_details?.new_status && (
+                            {log.action_details?.transaction_id != null && log.action_details.transaction_id !== ''
+                              ? `Tx: ${String(log.action_details.transaction_id).slice(0, 8)}...`
+                              : null}
+                            {log.action_details?.refund_amount != null
+                              ? ` • ${String(log.action_details.refund_amount)} ${String(log.action_details.refund_currency || '')}`
+                              : null}
+                            {log.action_details?.old_status && log.action_details?.new_status ? (
                               <> • {String(log.action_details.old_status)} → {String(log.action_details.new_status)}</>
-                            )}
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -878,14 +873,15 @@ export default function TransactionsPage() {
                         <span className="ml-2 text-gray-600">{log.admin_email}</span>
                         {log.action_details?.refund_amount != null && (
                           <div className="mt-1 text-gray-600">
-                            Refunded {log.action_details.refund_amount} {log.action_details.refund_currency || ''}
+                            Refunded {String(log.action_details.refund_amount)}{' '}
+                            {String(log.action_details.refund_currency || '')}
                           </div>
                         )}
-                        {log.action_details?.old_status && log.action_details?.new_status && (
+                        {log.action_details?.old_status != null && log.action_details?.new_status != null ? (
                           <div className="mt-1 text-gray-600">
                             Status: {String(log.action_details.old_status)} → {String(log.action_details.new_status)}
                           </div>
-                        )}
+                        ) : null}
                       </div>
                       <div className="text-xs text-gray-500 whitespace-nowrap">
                         {new Date(log.created_at).toLocaleString()}

@@ -12,6 +12,8 @@ export interface User {
   total_eth_balance: number;
   total_usdt_balance: number;
   total_usdc_balance: number;
+  /** Present on list users from admin-user-management; optional on some detail payloads */
+  total_sol_balance?: number;
   total_ngn_balance: number;
   created_at: string;
   email_verified: boolean;
@@ -62,6 +64,7 @@ export interface CryptoOverview {
     usdc?: number;
     xrp?: number;
     trx?: number;
+    sol?: number;
   };
 }
 
@@ -83,6 +86,7 @@ export interface QuickStats {
   transactions_today: number;
   volume_today: number;
   revenue_today: number;
+  pending_withdrawals?: number;
 }
 
 export interface SystemHealth {
@@ -90,6 +94,12 @@ export interface SystemHealth {
   uptime: number;
   response_time: number;
   errors: number;
+  /** Optional fields from admin system-health / dashboard payloads */
+  edge_functions_status?: string;
+  database_status?: string;
+  storage_used?: number;
+  storage_limit?: number;
+  api_calls_today?: number;
 }
 
 export interface Notification {
@@ -160,6 +170,8 @@ export interface TopReferrer {
   email: string;
   total_referrals: number;
   total_earnings: number;
+  referral_code?: string;
+  pending_earnings?: number;
 }
 
 export interface SupportTicket {
@@ -248,7 +260,53 @@ export interface AppSettings {
   app_version?: string;
   registration_enabled?: boolean;
   withdrawal_fee?: number;
+  /** JSON blob (treasury risk, crypto flags, etc.) */
+  additional_settings?: Record<string, unknown> | null;
   [key: string]: any;
+}
+
+/** Stored under `app_settings.additional_settings.crypto_asset_status` */
+export type CryptoAssetRuntimeStatus = 'active' | 'inactive' | 'maintenance';
+
+const CRYPTO_ASSET_STATUS_SYMBOLS = [
+  'BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'TRX',
+] as const;
+
+/** Normalize DB JSON to a full map (defaults to active). */
+export function normalizeCryptoAssetStatusMap(
+  additional_settings: unknown
+): Record<string, CryptoAssetRuntimeStatus> {
+  const nested =
+    additional_settings &&
+    typeof additional_settings === 'object' &&
+    'crypto_asset_status' in additional_settings
+      ? (additional_settings as { crypto_asset_status?: Record<string, string> }).crypto_asset_status
+      : undefined;
+
+  const out: Record<string, CryptoAssetRuntimeStatus> = {};
+  for (const sym of CRYPTO_ASSET_STATUS_SYMBOLS) {
+    const raw = nested?.[sym] ?? nested?.[sym.toLowerCase()];
+    const v = String(raw ?? 'active').toLowerCase();
+    if (v === 'inactive' || v === 'maintenance') {
+      out[sym] = v;
+    } else {
+      out[sym] = 'active';
+    }
+  }
+  return out;
+}
+
+export function cryptoAssetStatusToDisplay(
+  s: CryptoAssetRuntimeStatus
+): 'Active' | 'Inactive' | 'Maintenance' {
+  switch (s) {
+    case 'inactive':
+      return 'Inactive';
+    case 'maintenance':
+      return 'Maintenance';
+    default:
+      return 'Active';
+  }
 }
 
 // API Response Types
@@ -803,7 +861,10 @@ export const transactionsApi = {
     total: number;
     by_status: { pending: number; completed: number; failed: number };
     by_type: { deposit: number; withdrawal: number; send: number; receive: number; buy: number; sell: number };
+    /** Sum of fiat_amount (NGN) for completed NGN transactions — platform volume, not fees */
     volume: { ngn: number };
+    /** Sum of fee_amount (NGN) for completed transactions — actual fee revenue */
+    fee_revenue_ngn: number;
   }>> => {
     try {
       const supabase = createClient();
@@ -886,6 +947,23 @@ export const transactionsApi = {
         }, 0);
       }
 
+      const { data: feeRows, error: feeError } = await supabase
+        .from('transactions')
+        .select('fee_amount, fiat_currency')
+        .eq('status', 'COMPLETED');
+
+      let feeRevenueNgn = 0;
+      if (!feeError && feeRows) {
+        feeRevenueNgn = feeRows.reduce((sum, tx) => {
+          const row = tx as { fee_amount?: string | null; fiat_currency?: string | null };
+          const fee = parseFloat(row.fee_amount || '0');
+          const cur = String(row.fiat_currency || '').toUpperCase();
+          // Count fees on NGN legs and legacy rows with no fiat_currency set
+          if (!cur || cur === 'NGN') return sum + fee;
+          return sum;
+        }, 0);
+      }
+
       return {
         success: true,
         data: {
@@ -906,6 +984,7 @@ export const transactionsApi = {
           volume: {
             ngn: ngnVolume,
           },
+          fee_revenue_ngn: feeRevenueNgn,
         },
       };
     } catch (error: any) {
@@ -1273,6 +1352,7 @@ export const cryptoApi = {
         usdc?: number;
         xrp?: number;
         trx?: number;
+        sol?: number;
       } = {};
       const usersWithBalance = new Set<string>();
 
@@ -1304,6 +1384,8 @@ export const cryptoApi = {
               userAllocatedBalances.xrp = (userAllocatedBalances.xrp || 0) + balance;
             } else if (currencyLower === 'trx') {
               userAllocatedBalances.trx = (userAllocatedBalances.trx || 0) + balance;
+            } else if (currencyLower === 'sol') {
+              userAllocatedBalances.sol = (userAllocatedBalances.sol || 0) + balance;
             }
           }
         });
@@ -1493,16 +1575,15 @@ export const dashboardApi = {
         }, 0);
       }
 
-      // Get revenue (sum of fee_amount for completed transactions)
+      // Get real platform revenue from admin_revenue ledger (NGN-normalized)
       const { data: revenueData } = await supabase
-        .from('transactions')
-        .select('fee_amount')
-        .eq('status', 'COMPLETED');
+        .from('admin_revenue')
+        .select('amount_ngn');
 
       let revenue = 0;
       if (revenueData) {
-        revenue = revenueData.reduce((sum, tx) => {
-          return sum + parseFloat(tx.fee_amount || '0');
+        revenue = revenueData.reduce((sum, row) => {
+          return sum + parseFloat(String(row.amount_ngn || '0'));
         }, 0);
       }
 
@@ -1572,18 +1653,17 @@ export const dashboardApi = {
         }, 0);
       }
 
-      // Get revenue today (sum of fee_amount for completed transactions today)
+      // Get real revenue today from admin_revenue ledger
       const { data: revenueTodayData } = await supabase
-        .from('transactions')
-        .select('fee_amount')
-        .eq('status', 'COMPLETED')
+        .from('admin_revenue')
+        .select('amount_ngn')
         .gte('created_at', today.toISOString())
         .lt('created_at', tomorrow.toISOString());
 
       let revenueToday = 0;
       if (revenueTodayData) {
-        revenueToday = revenueTodayData.reduce((sum, tx) => {
-          return sum + parseFloat(tx.fee_amount || '0');
+        revenueToday = revenueTodayData.reduce((sum, row) => {
+          return sum + parseFloat(String(row.amount_ngn || '0'));
         }, 0);
       }
 
@@ -2111,24 +2191,29 @@ export const referralApi = {
 
       // Create profile map
       const profileMap = new Map(
-        (profiles || []).map(p => [p.user_id, { 
-          name: p.full_name || 'Unknown', 
-          email: p.email || '',
-          referral_code: p.referral_code || 'N/A'
-        }])
+        (profiles || []).map((p: { user_id: string; full_name?: string | null; email?: string | null; referral_code?: string | null }) => [
+          p.user_id,
+          {
+            name: (p.full_name && String(p.full_name).trim()) || (p.email && String(p.email).trim()) || 'Unknown',
+            email: (p.email && String(p.email).trim()) || '',
+            referral_code: p.referral_code || 'N/A',
+          },
+        ])
       );
 
       // Combine stats with profile data
-      const topReferrers: TopReferrer[] = referrerStats.map(r => ({
-        user_id: r.user_id,
-        name: profileMap.get(r.user_id)?.name || 'Unknown',
-        email: profileMap.get(r.user_id)?.email || '',
-        total_referrals: r.total_referrals,
-        total_earnings: r.total_earnings,
-        // Add referral_code and pending_earnings as optional fields
-        referral_code: profileMap.get(r.user_id)?.referral_code || 'N/A',
-        pending_earnings: pendingMap.get(r.user_id) || 0,
-      } as TopReferrer & { referral_code?: string; pending_earnings?: number }));
+      const topReferrers: TopReferrer[] = referrerStats.map((r) => {
+        const profile = profileMap.get(r.user_id);
+        return {
+          user_id: r.user_id,
+          name: profile?.name || 'Unknown',
+          email: profile?.email || '',
+          total_referrals: r.total_referrals,
+          total_earnings: r.total_earnings,
+          referral_code: profile?.referral_code || 'N/A',
+          pending_earnings: pendingMap.get(r.user_id) || 0,
+        };
+      });
 
       return {
         success: true,
@@ -2214,18 +2299,43 @@ export const referralApi = {
         };
       }
 
-      // Transform data to match ReferralCode interface
-      const referralCodes: ReferralCode[] = (data || [])
-        .filter((profile: any) => profile.referral_code) // Only include profiles with referral codes
+      // Base rows (display expects full_name / email on ReferralCode)
+      const baseRows = (data || [])
+        .filter((profile: any) => profile.referral_code)
         .map((profile: any) => ({
-          id: profile.user_id, // Use user_id as id
-          user_id: profile.user_id,
-          referral_code: profile.referral_code,
-          created_at: profile.created_at,
-          // Additional fields for display
-          user_name: profile.full_name,
-          user_email: profile.email,
+          id: profile.user_id as string,
+          user_id: profile.user_id as string,
+          referral_code: profile.referral_code as string,
+          created_at: profile.created_at as string,
+          full_name: (profile.full_name as string | null) ?? undefined,
+          email: (profile.email as string | null) ?? undefined,
         }));
+
+      const userIds = baseRows.map((r) => r.user_id).filter(Boolean);
+      const countMap = new Map<string, number>();
+      const earningsMap = new Map<string, number>();
+
+      if (userIds.length > 0) {
+        const { data: refAgg, error: refAggError } = await supabase
+          .from('referrals')
+          .select('referrer_user_id, reward_amount')
+          .in('referrer_user_id', userIds);
+
+        if (!refAggError && refAgg) {
+          refAgg.forEach((row: { referrer_user_id: string; reward_amount?: string | number | null }) => {
+            const rid = row.referrer_user_id;
+            countMap.set(rid, (countMap.get(rid) || 0) + 1);
+            const amt = parseFloat(String(row.reward_amount ?? 0)) || 0;
+            earningsMap.set(rid, (earningsMap.get(rid) || 0) + amt);
+          });
+        }
+      }
+
+      const referralCodes: ReferralCode[] = baseRows.map((row) => ({
+        ...row,
+        total_referrals: countMap.get(row.user_id) || 0,
+        total_earnings: earningsMap.get(row.user_id) || 0,
+      }));
 
       const total = count || 0;
       const totalPages = Math.ceil(total / limit);
@@ -2263,6 +2373,36 @@ export const referralApi = {
         error: error.message || 'Failed to fetch referral codes',
       };
     }
+  },
+
+  getUserReferrals: async (
+    _userId: string
+  ): Promise<
+    ApiResponse<{
+      referral_code: string | null;
+      balance: {
+        total_referrals: number;
+        total_earnings: number;
+        available_balance: number;
+        withdrawn_balance: number;
+      };
+    }>
+  > => {
+    return {
+      success: false,
+      error: 'Referral details are not available from this client yet.',
+    };
+  },
+
+  creditReferralBalance: async (_params: {
+    user_id: string;
+    amount: number;
+    description?: string;
+  }): Promise<ApiResponse<{ new_balance: number }>> => {
+    return {
+      success: false,
+      error: 'Credit referral balance is not available from this client yet.',
+    };
   },
 };
 
@@ -2560,6 +2700,7 @@ export const chatSupportApi = {
         priority: ticket.priority,
         category: ticket.category || 'general',
         created_at: ticket.created_at,
+        customer_chat_display_name: (ticket as { customer_chat_display_name?: string | null }).customer_chat_display_name ?? undefined,
         user_profiles: profile ? {
           user_id: profile.user_id,
           full_name: profile.full_name,
@@ -2582,6 +2723,7 @@ export const chatSupportApi = {
             user_id: msg.user_id,
             message: msg.message,
             is_admin: msg.is_admin || false,
+            sender_display_name: msg.sender_display_name ?? null,
             created_at: msg.created_at,
             is_read: msg.is_read,
             read_at: msg.read_at,
@@ -2611,6 +2753,17 @@ export const chatSupportApi = {
         };
       }
 
+      const { data: adminProfile } = await supabase
+        .from('user_profiles')
+        .select('full_name, email')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+
+      const agentLabel =
+        (adminProfile?.full_name && String(adminProfile.full_name).trim()) ||
+        (adminProfile?.email && String(adminProfile.email).split('@')[0]) ||
+        'Support Agent';
+
       const { data: newMessage, error } = await supabase
         .from('support_messages')
         .insert({
@@ -2618,6 +2771,7 @@ export const chatSupportApi = {
           user_id: session.user.id,
           message: message,
           is_admin: true,
+          sender_display_name: agentLabel.slice(0, 80),
         })
         .select()
         .single();
@@ -2648,6 +2802,7 @@ export const chatSupportApi = {
             created_at: newMessage.created_at,
             is_read: newMessage.is_read,
             read_at: newMessage.read_at,
+            sender_display_name: (newMessage as { sender_display_name?: string | null }).sender_display_name ?? null,
           },
         },
       };
@@ -2960,12 +3115,14 @@ export const revenueApi = {
       if (params?.limit) queryParams.append('limit', params.limit.toString());
       if (params?.offset) queryParams.append('offset', params.offset.toString());
 
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
       const response = await fetch(
         `${supabaseUrl}/functions/v1/get-admin-revenue?${queryParams.toString()}`,
         {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${session.access_token}`,
+            Authorization: `Bearer ${session.access_token}`,
+            apikey: anonKey,
             'Content-Type': 'application/json',
           },
         }
@@ -3155,7 +3312,9 @@ export const revenueApi = {
           const revenueType = record.revenue_type || '';
           const source = record.source || '';
 
-          if (revenueType === 'DEPOSIT_FEE' || revenueType === 'SEND_FEE' || revenueType === 'WITHDRAWAL_FEE' || revenueType === 'TRANSFER_FEE') {
+          if (revenueType === 'WITHDRAWAL_FEE') {
+            revenueBySource.withdrawal_fees += amountNgn;
+          } else if (revenueType === 'DEPOSIT_FEE' || revenueType === 'SEND_FEE' || revenueType === 'TRANSFER_FEE') {
             revenueBySource.transaction_fees += amountNgn;
           } else if (revenueType === 'BUY_FEE' || revenueType === 'SELL_FEE' || revenueType === 'SWAP_FEE') {
             revenueBySource.crypto_trading_fees += amountNgn;
@@ -3163,8 +3322,6 @@ export const revenueApi = {
             revenueBySource.gift_card_sales += amountNgn;
           } else if (source.includes('UTILITY') || source.includes('BILL')) {
             revenueBySource.utility_services += amountNgn;
-          } else if (revenueType === 'WITHDRAWAL_FEE') {
-            revenueBySource.withdrawal_fees += amountNgn;
           }
         });
       }
@@ -3247,6 +3404,7 @@ export const appSettingsApi = {
               transaction_fee: 0,
               support_email: 'support@chaincola.com',
               support_phone: '+234 800 000 0000',
+              additional_settings: null,
             },
           };
         }
@@ -3278,6 +3436,7 @@ export const appSettingsApi = {
                 support_address: settings.support_address,
                 privacy_policy: settings.privacy_policy,
                 terms_and_conditions: settings.terms_and_conditions,
+                additional_settings: (settings.additional_settings as Record<string, unknown> | null) ?? null,
               },
             };
           }
@@ -3302,6 +3461,7 @@ export const appSettingsApi = {
             transaction_fee: 0,
             support_email: 'support@chaincola.com',
             support_phone: '+234 800 000 0000',
+            additional_settings: null,
           },
         };
       }
@@ -3319,6 +3479,7 @@ export const appSettingsApi = {
           support_address: data.support_address,
           privacy_policy: data.privacy_policy,
           terms_and_conditions: data.terms_and_conditions,
+          additional_settings: (data.additional_settings as Record<string, unknown> | null) ?? null,
         },
       };
     } catch (error: any) {
@@ -3477,6 +3638,99 @@ export const appSettingsApi = {
       };
     }
   },
+
+  /**
+   * Persists per-asset flags under app_settings.additional_settings.crypto_asset_status
+   * (merges with existing additional_settings keys such as treasury risk).
+   */
+  mergeCryptoAssetStatuses: async (
+    updates: Partial<Record<(typeof CRYPTO_ASSET_STATUS_SYMBOLS)[number], CryptoAssetRuntimeStatus>>
+  ): Promise<
+    ApiResponse<{ crypto_asset_status: Record<string, CryptoAssetRuntimeStatus> }>
+  > => {
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError || !session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      const { data: row, error: fetchError } = await supabase
+        .from('app_settings')
+        .select('additional_settings')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (fetchError) {
+        return { success: false, error: fetchError.message || 'Failed to load settings' };
+      }
+
+      const prevAdditional =
+        row?.additional_settings && typeof row.additional_settings === 'object'
+          ? { ...(row.additional_settings as Record<string, unknown>) }
+          : {};
+
+      const normalized = normalizeCryptoAssetStatusMap(prevAdditional);
+      const nextStatus: Record<string, CryptoAssetRuntimeStatus> = { ...normalized };
+      for (const [sym, st] of Object.entries(updates)) {
+        if (!sym || !st) continue;
+        const u = sym.toUpperCase() as (typeof CRYPTO_ASSET_STATUS_SYMBOLS)[number];
+        if ((CRYPTO_ASSET_STATUS_SYMBOLS as readonly string[]).includes(u)) {
+          nextStatus[u] = st;
+        }
+      }
+
+      const nextAdditional = {
+        ...prevAdditional,
+        crypto_asset_status: nextStatus,
+      };
+
+      const patch = {
+        additional_settings: nextAdditional,
+        updated_by: session.user.id,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: afterUpdate, error: updateError } = await supabase
+        .from('app_settings')
+        .update(patch)
+        .eq('id', 1)
+        .select('additional_settings')
+        .maybeSingle();
+
+      if (updateError) {
+        return { success: false, error: updateError.message || 'Failed to update crypto statuses' };
+      }
+
+      if (!afterUpdate) {
+        const { error: insertError } = await supabase.from('app_settings').insert({
+          id: 1,
+          ...patch,
+        });
+        if (insertError) {
+          return { success: false, error: insertError.message || 'Failed to create app settings row' };
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          crypto_asset_status: normalizeCryptoAssetStatusMap(nextAdditional),
+        },
+      };
+    } catch (error: unknown) {
+      const err = error as Error;
+      console.error('mergeCryptoAssetStatuses:', err);
+      return {
+        success: false,
+        error: err?.message || 'Failed to merge crypto asset statuses',
+      };
+    }
+  },
 };
 
 // Verification API
@@ -3495,7 +3749,7 @@ export interface Verification {
   submitted_at: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
-  rejection_reason: string | null;
+  rejection_reason?: string | null;
   user_name?: string;
 }
 
@@ -3863,30 +4117,44 @@ export const verificationApi = {
         return { success: false, error: 'Not authenticated' };
       }
 
-      // Call the database function to reject verification
-      const { data: result, error: functionError } = await supabase.rpc('admin_reject_verification', {
-        p_verification_id: id,
-        p_admin_user_id: session.user.id,
-        p_rejection_reason: reason,
-      });
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-      if (functionError) {
-        console.error('Error rejecting verification:', functionError);
-        return { success: false, error: functionError.message };
+      if (!supabaseUrl || !supabaseAnonKey) {
+        return { success: false, error: 'Supabase configuration missing' };
       }
 
-      // Update user profile verification_status
-      const { data: verification } = await supabase
-        .from('account_verifications')
-        .select('user_id')
-        .eq('id', id)
-        .single();
+      // Same edge function as approve — runs RPC + push + email
+      const response = await fetch(`${supabaseUrl}/functions/v1/admin-verification-management`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': supabaseAnonKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'reject',
+          verification_id: id,
+          rejection_reason: reason,
+        }),
+      });
 
-      if (verification) {
-        await supabase
-          .from('user_profiles')
-          .update({ verification_status: 'rejected' })
-          .eq('user_id', verification.user_id);
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText || `HTTP ${response.status}` };
+        }
+        console.error('Error rejecting verification:', errorData);
+        return { success: false, error: errorData.error || 'Failed to reject verification' };
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        return { success: false, error: result.error || 'Failed to reject verification' };
       }
 
       // Fetch updated verification

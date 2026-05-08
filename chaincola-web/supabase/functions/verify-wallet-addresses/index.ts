@@ -254,24 +254,6 @@ serve(async (req) => {
     // Otherwise, use the provided user_id or authenticated user
     const targetUserId = user_id || userId;
 
-    // Get encryption keys (matching the priority order used in generation functions)
-    // BTC: BTC_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const btcEncryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') || 
-                            Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                            Deno.env.get('ETH_ENCRYPTION_KEY');
-    // ETH: ETH_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > TRON_ENCRYPTION_KEY
-    const ethEncryptionKey = Deno.env.get('ETH_ENCRYPTION_KEY') || 
-                            Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                            Deno.env.get('TRON_ENCRYPTION_KEY');
-    // XRP: XRP_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const xrpEncryptionKey = Deno.env.get('XRP_ENCRYPTION_KEY') || 
-                            Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                            Deno.env.get('ETH_ENCRYPTION_KEY');
-    // SOL: SOL_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
-    const solEncryptionKey = Deno.env.get('SOL_ENCRYPTION_KEY') || 
-                            Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
-                            Deno.env.get('ETH_ENCRYPTION_KEY');
-
     // Fetch wallets
     let query = supabase
       .from('crypto_wallets')
@@ -332,10 +314,9 @@ serve(async (req) => {
 
         // Try all possible encryption keys in priority order (matching generation functions)
         if (wallet.asset === 'BTC') {
-          // BTC: BTC_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
           const possibleKeys = [
-            Deno.env.get('BTC_ENCRYPTION_KEY'),
             Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+            Deno.env.get('BTC_ENCRYPTION_KEY'),
             Deno.env.get('ETH_ENCRYPTION_KEY'),
           ].filter(k => k) as string[];
 
@@ -367,10 +348,9 @@ serve(async (req) => {
 
           derivedAddress = await deriveBTCAddress(privateKeyHex, wallet.network as 'mainnet' | 'testnet');
         } else if (wallet.asset === 'ETH') {
-          // ETH: ETH_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > TRON_ENCRYPTION_KEY
           const possibleKeys = [
-            Deno.env.get('ETH_ENCRYPTION_KEY'),
             Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+            Deno.env.get('ETH_ENCRYPTION_KEY'),
             Deno.env.get('TRON_ENCRYPTION_KEY'),
           ].filter(k => k) as string[];
 
@@ -401,10 +381,9 @@ serve(async (req) => {
 
           derivedAddress = await deriveETHAddress(privateKeyHex);
         } else if (wallet.asset === 'XRP') {
-          // XRP: XRP_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
           const possibleKeys = [
-            Deno.env.get('XRP_ENCRYPTION_KEY'),
             Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+            Deno.env.get('XRP_ENCRYPTION_KEY'),
             Deno.env.get('ETH_ENCRYPTION_KEY'),
           ].filter(k => k) as string[];
 
@@ -435,10 +414,9 @@ serve(async (req) => {
 
           derivedAddress = await deriveXRPAddress(privateKeyHex);
         } else if (wallet.asset === 'SOL') {
-          // SOL: SOL_ENCRYPTION_KEY > CRYPTO_ENCRYPTION_KEY > ETH_ENCRYPTION_KEY
           const possibleKeys = [
-            Deno.env.get('SOL_ENCRYPTION_KEY'),
             Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+            Deno.env.get('SOL_ENCRYPTION_KEY'),
             Deno.env.get('ETH_ENCRYPTION_KEY'),
           ].filter(k => k) as string[];
 

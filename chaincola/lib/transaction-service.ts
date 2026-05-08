@@ -286,6 +286,67 @@ export async function getUserTransactions(
   }
 }
 
+/** Raw row from `transactions` for PDF / email statements */
+export type StatementTransactionRow = Record<string, unknown>;
+
+/**
+ * Loads the signed-in user's transactions for a statement period (chronological).
+ */
+export async function getUserTransactionsForStatement(
+  userId: string,
+  rangeStart: Date,
+  rangeEnd: Date,
+  limit: number = 2000,
+): Promise<{ rows: StatementTransactionRow[]; error: string | null }> {
+  try {
+    if (!supabase) {
+      return { rows: [], error: 'Supabase client not initialized' };
+    }
+    const start = new Date(rangeStart);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(rangeEnd);
+    end.setHours(23, 59, 59, 999);
+
+    const { data, error } = await supabase
+      .from('transactions')
+      .select(
+        [
+          'id',
+          'created_at',
+          'transaction_type',
+          'status',
+          'crypto_currency',
+          'fiat_currency',
+          'crypto_amount',
+          'fiat_amount',
+          'fee_amount',
+          'fee_currency',
+          'network',
+          'transaction_hash',
+          'external_reference',
+          'external_order_id',
+          'external_transaction_id',
+          'notes',
+          'metadata',
+          'from_address',
+          'to_address',
+        ].join(','),
+      )
+      .eq('user_id', userId)
+      .gte('created_at', start.toISOString())
+      .lte('created_at', end.toISOString())
+      .order('created_at', { ascending: true })
+      .limit(limit);
+
+    if (error) {
+      return { rows: [], error: error.message || 'Failed to fetch transactions' };
+    }
+    return { rows: (data || []) as StatementTransactionRow[], error: null };
+  } catch (error: any) {
+    return { rows: [], error: error?.message || 'Unexpected error loading transactions' };
+  }
+}
+
 /**
  * Fetches a single transaction by ID
  */

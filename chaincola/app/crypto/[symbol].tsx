@@ -1,20 +1,27 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, View, TouchableOpacity, Image, ScrollView, Dimensions, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
-import { getUserCryptoBalances, formatCryptoBalance, formatNgnValue, formatUsdValue, getCryptoPrice } from '@/lib/crypto-price-service';
+import { getUserCryptoBalances, formatCryptoBalance, formatNgnValue, getCryptoPrice } from '@/lib/crypto-price-service';
 import { getUserTransactions, TransactionListItem } from '@/lib/transaction-service';
 import WalletAddressModal from '@/components/wallet-address-modal';
-// Chart visualization using View components
+import CryptoPriceChart from '@/components/crypto-price-chart';
+import {
+  getCryptoChartHistory,
+  getCryptoMarketInfo,
+  formatCompactNumber,
+  type ChartRange,
+  type MarketInfo,
+} from '@/lib/coingecko-service';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CHART_HEIGHT = 200;
-const CHART_WIDTH = SCREEN_WIDTH - 40;
+// Price card has 20px outer padding from scroll content + 20px internal padding
+const CHART_WIDTH = SCREEN_WIDTH - 40 - 40;
+const CHART_HEIGHT = 180;
 
 const SYMBOL_TO_ID: Record<string, string> = {
   BTC: '1',
@@ -43,17 +50,41 @@ const SYMBOL_TO_LOGO: Record<string, any> = {
   XRP: require('@/assets/images/ripple.png'),
 };
 
-const TIME_RANGES = ['1H', '1D', '1W', '1M', '1Y'] as const;
-type TimeRange = typeof TIME_RANGES[number];
+const TIME_RANGES: readonly ChartRange[] = ['1H', '1D', '1W', '1M', '1Y'] as const;
 
-// Map time ranges to days for fallback
-const daysMap: Record<TimeRange, number> = {
-  '1H': 0.04, // ~1 hour
-  '1D': 1,
-  '1W': 7,
-  '1M': 30,
-  '1Y': 365,
+// Suffix shown next to the percentage change in the price card.
+const RANGE_SUFFIX: Record<ChartRange, string> = {
+  '1H': '1H',
+  '1D': 'Today',
+  '1W': '1W',
+  '1M': '1M',
+  '1Y': '1Y',
 };
+
+// Used when CoinGecko's description.en is unavailable (network failure / rate limit).
+const FALLBACK_DESCRIPTIONS: Record<string, string> = {
+  BTC: 'Bitcoin uses peer-to-peer technology to operate with no central authority or banks; managing transactions and the issuing of bitcoins is carried out collectively by the network. Bitcoin is open-source; its design is public, nobody owns or controls Bitcoin and everyone can take part. Through many of its unique properties, Bitcoin allows exciting uses that could not be covered by any previous payment system.',
+  ETH: 'Ethereum is a global, open-source platform for decentralized applications. On Ethereum, you can write code that controls digital value, runs exactly as programmed, and is accessible anywhere in the world.',
+  SOL: 'Solana is a high-performance blockchain that supports builders around the world creating crypto apps that scale today. It offers fast confirmation times and low transaction fees.',
+  USDT: 'Tether (USDT) is a stablecoin pegged 1:1 to the US dollar, designed to maintain a stable value while moving across blockchains.',
+  USDC: 'USD Coin (USDC) is a fully reserved US dollar stablecoin, redeemable 1:1 for US dollars and audited by independent firms.',
+  XRP: 'XRP is the native digital asset of the XRP Ledger, designed for fast, low-cost cross-border payments and settlement.',
+};
+
+interface AboutStatRowProps {
+  label: string;
+  value: string;
+  showDivider?: boolean;
+}
+
+function AboutStatRow({ label, value, showDivider }: AboutStatRowProps) {
+  return (
+    <View style={[styles.aboutStatRow, showDivider && styles.aboutStatRowDivider]}>
+      <ThemedText style={styles.aboutStatLabel}>{label}</ThemedText>
+      <ThemedText style={styles.aboutStatValue}>{value}</ThemedText>
+    </View>
+  );
+}
 
 // Chart: no market API — use static price for flat display
 function generateFallbackChartData(symbol: string, days: number): number[] {
@@ -96,17 +127,18 @@ export default function CryptoDetailsScreen() {
   const [balanceLoading, setBalanceLoading] = useState<boolean>(true);
   const [showWalletModal, setShowWalletModal] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'ACTIVITY' | 'ABOUT'>('ACTIVITY');
-  const [selectedRange, setSelectedRange] = useState<TimeRange>('1D');
+  const [selectedRange, setSelectedRange] = useState<ChartRange>('1D');
   const [isFavorited, setIsFavorited] = useState(false);
   const [chartData, setChartData] = useState<number[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
+  const [marketInfo, setMarketInfo] = useState<MarketInfo | null>(null);
   const [transactions, setTransactions] = useState<TransactionListItem[]>([]);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
 
   const fullName = SYMBOL_TO_NAME[symbol] || symbol;
   const logo = SYMBOL_TO_LOGO[symbol] || require('@/assets/images/bitcoin.png');
 
-  // Fetch price from pricing engine (static rate only, no market API)
+  // Live market price (Supabase edge: Alchemy / Luno + fallbacks)
   useEffect(() => {
     let mounted = true;
     async function fetchPrice() {
@@ -116,7 +148,9 @@ export default function CryptoDetailsScreen() {
       if (price) {
         setPriceUSD(price.price_usd || null);
         setPriceNGN(price.price_ngn || null);
-        setChange24h(null); // Static rate: no 24h change
+        setChange24h(
+          typeof price.change_24h_pct === 'number' ? price.change_24h_pct : null
+        );
       } else {
         setPriceUSD(null);
         setPriceNGN(null);
@@ -239,27 +273,46 @@ export default function CryptoDetailsScreen() {
     return () => { mounted = false; };
   }, [user?.id, symbol, activeTab, fullName]);
 
-  // Chart: no market API — use static price (flat line from current price or fallback)
+  // Real chart history from CoinGecko (priced in NGN to match the rest of the UI).
+  // Falls back to a flat line so the card never collapses when the API is down.
   useEffect(() => {
     let mounted = true;
     async function loadChartData() {
       if (!symbol) return;
       setChartLoading(true);
       try {
-        const { price } = await getCryptoPrice(symbol);
-        const base = price?.price_usd ? price.price_usd : (generateFallbackChartData(symbol, 1)[0] || 1000);
-        const days = daysMap[selectedRange] || 1;
-        const data = price ? Array(50).fill(base) : generateFallbackChartData(symbol, days);
-        if (mounted) setChartData(data);
+        const history = await getCryptoChartHistory(symbol, selectedRange, 'ngn');
+        if (!mounted) return;
+        if (history.points.length >= 2) {
+          setChartData(history.points);
+        } else {
+          // No real data: show a flat line at the current price (or a stub) so layout is preserved.
+          const fallbackBase = priceNGN || generateFallbackChartData(symbol, 1)[0] || 1000;
+          setChartData(Array(24).fill(fallbackBase));
+        }
       } catch {
-        if (mounted) setChartData(generateFallbackChartData(symbol, daysMap[selectedRange] || 1));
+        if (mounted) setChartData(Array(24).fill(priceNGN || 1000));
       } finally {
         if (mounted) setChartLoading(false);
       }
     }
     loadChartData();
     return () => { mounted = false; };
+    // priceNGN intentionally not in deps — it only seeds the fallback line on first run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, selectedRange]);
+
+  // Market metadata (cap / volume / supply / description) for the About tab.
+  // Fetched once per symbol; doesn't depend on the selected time range.
+  useEffect(() => {
+    let mounted = true;
+    if (!symbol) return;
+    (async () => {
+      const info = await getCryptoMarketInfo(symbol, 'ngn');
+      if (mounted) setMarketInfo(info);
+    })();
+    return () => { mounted = false; };
+  }, [symbol]);
 
   const handleSend = () => {
     if (!symbol || !id) {
@@ -305,29 +358,26 @@ export default function CryptoDetailsScreen() {
     });
   };
 
-  // Calculate chart visualization data
-  const getChartBars = () => {
-    if (chartData.length === 0) return [];
-    const min = Math.min(...chartData);
-    const max = Math.max(...chartData);
-    const range = max - min || 1;
-    // Account for padding in chartView (60px left, 20px right)
-    const chartAreaWidth = CHART_WIDTH - 80;
-    const barWidth = chartAreaWidth / chartData.length;
-    
-    return chartData.map((value, index) => {
-      const height = ((value - min) / range) * CHART_HEIGHT;
-      return {
-        x: 60 + index * barWidth, // Offset by left padding
-        height: Math.max(2, height),
-        value,
-      };
-    });
-  };
-
-  const chartBars = getChartBars();
-  const isPositive = (change24h ?? 0) >= 0;
-  const chartColor = isPositive ? '#10B981' : '#EF4444';
+  // Period-based change derived from the chart series (start vs end of the selected range).
+  // Falls back to the 24h change from the price service when the chart has no data yet.
+  const periodChange = (() => {
+    if (chartData.length >= 2) {
+      const first = chartData[0];
+      const last = chartData[chartData.length - 1];
+      if (first && Number.isFinite(first) && first !== 0) {
+        const absolute = last - first;
+        const pct = (absolute / first) * 100;
+        return { absolute, pct };
+      }
+    }
+    if (typeof change24h === 'number' && priceNGN != null) {
+      const absolute = (priceNGN * change24h) / 100;
+      return { absolute, pct: change24h };
+    }
+    return { absolute: 0, pct: 0 };
+  })();
+  const isPositive = periodChange.pct >= 0;
+  const changeColor = isPositive ? '#10B981' : '#EF4444';
 
   return (
     <ThemedView style={styles.container}>
@@ -383,36 +433,99 @@ export default function CryptoDetailsScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
-          {/* Crypto Overview Card */}
-          <View style={styles.cryptoOverviewCard}>
-            <View style={styles.cryptoOverviewContent}>
-              <View style={styles.cryptoOverviewLeft}>
-                <View style={styles.cryptoOverviewIconContainer}>
-                  <Image source={logo} style={styles.cryptoOverviewIcon} />
-                </View>
-                <View style={styles.cryptoOverviewText}>
-                  <ThemedText style={styles.cryptoOverviewName}>{fullName}</ThemedText>
-                </View>
-              </View>
+          {/* Balance section (matches screenshot: small label with icon, big amount, NGN equivalent) */}
+          <View style={styles.balanceSectionV2}>
+            <View style={styles.balanceLabelRow}>
+              <Image source={logo} style={styles.balanceLabelIcon} />
+              <ThemedText style={styles.balanceLabelV2}>{symbol} balance</ThemedText>
             </View>
-          </View>
-
-          {/* Available Balance Card */}
-          <View style={styles.availableBalanceCard}>
-            <ThemedText style={styles.availableBalanceLabel}>Available Balance</ThemedText>
             {balanceLoading ? (
               <ActivityIndicator size="large" color="#6B46C1" style={{ marginVertical: 16 }} />
             ) : (
-              <ThemedText 
-                style={styles.availableBalanceAmount}
-                numberOfLines={2}
-                adjustsFontSizeToFit={true}
-                minimumFontScale={0.5}
-                allowFontScaling={true}
-              >
-                {formatCryptoBalance(balanceValue || 0, symbol)} {symbol}
-              </ThemedText>
+              <>
+                <ThemedText
+                  style={styles.balanceAmountV2}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.5}
+                >
+                  {formatCryptoBalance(balanceValue || 0, symbol)} {symbol}
+                </ThemedText>
+                <ThemedText style={styles.balanceNgnV2}>
+                  {formatNgnValue(balanceNGNValue || 0)}
+                </ThemedText>
+              </>
             )}
+          </View>
+
+          {/* Price card with chart and time-range selector */}
+          <View style={styles.priceCardV2}>
+            <View style={styles.priceCardHeaderV2}>
+              <ThemedText style={styles.priceCardLabelV2}>{symbol} Price</ThemedText>
+              <TouchableOpacity
+                style={styles.priceCardInfoButton}
+                onPress={() =>
+                  Alert.alert(
+                    `${fullName} (${symbol}) price`,
+                    `Live ${symbol} market price in NGN. Updated every minute. Chart history is provided by CoinGecko.`,
+                  )
+                }
+                hitSlop={8}
+              >
+                <MaterialIcons name="info-outline" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            </View>
+
+            <ThemedText
+              style={styles.priceCardAmountV2}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.5}
+            >
+              {priceNGN != null ? formatNgnValue(priceNGN) : '—'}
+            </ThemedText>
+
+            <View style={styles.priceChangeRowV2}>
+              <ThemedText style={[styles.priceChangeAmountV2, { color: changeColor }]}>
+                {isPositive ? '+' : '-'}
+                {formatNgnValue(Math.abs(periodChange.absolute))}
+              </ThemedText>
+              <ThemedText style={[styles.priceChangePctV2, { color: changeColor }]}>
+                ({isPositive ? '+' : ''}
+                {periodChange.pct.toFixed(2)}%)
+              </ThemedText>
+              <ThemedText style={styles.priceChangeSuffixV2}>{RANGE_SUFFIX[selectedRange]}</ThemedText>
+            </View>
+
+            <View style={styles.chartContainerV2}>
+              <CryptoPriceChart
+                data={chartData}
+                width={CHART_WIDTH}
+                height={CHART_HEIGHT}
+                color={changeColor}
+                loading={chartLoading}
+              />
+            </View>
+
+            <View style={styles.rangeSelectorV2}>
+              {TIME_RANGES.map((range) => {
+                const active = selectedRange === range;
+                return (
+                  <TouchableOpacity
+                    key={range}
+                    style={[styles.rangeButtonV2, active && styles.rangeButtonV2Active]}
+                    onPress={() => setSelectedRange(range)}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText
+                      style={[styles.rangeButtonTextV2, active && styles.rangeButtonTextV2Active]}
+                    >
+                      {range}
+                    </ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
 
           {/* Tabs */}
@@ -515,15 +628,35 @@ export default function CryptoDetailsScreen() {
               </View>
             ) : (
               <View style={styles.aboutContent}>
-                <ThemedText style={styles.aboutTitle}>{fullName} ({symbol})</ThemedText>
-                <ThemedText style={styles.aboutText}>
-                  {symbol === 'BTC' && 'Bitcoin is a decentralized digital currency that enables peer-to-peer transactions without intermediaries.'}
-                  {symbol === 'ETH' && 'Ethereum is a blockchain platform that enables smart contracts and decentralized applications.'}
-                  {symbol === 'SOL' && 'Solana is a high-performance blockchain supporting decentralized apps and crypto-currencies.'}
-                  {symbol === 'USDT' && 'Tether is a stablecoin pegged to the US dollar, designed to maintain a stable value.'}
-                  {symbol === 'USDC' && 'USD Coin is a fully collateralized US dollar stablecoin.'}
-                  {symbol === 'XRP' && 'XRP is a digital asset built for payments, enabling fast and low-cost transactions.'}
-                </ThemedText>
+                <View style={styles.aboutHeaderV2}>
+                  <ThemedText style={styles.aboutTitleV2} numberOfLines={2}>
+                    About {fullName}
+                  </ThemedText>
+                  <Image source={logo} style={styles.aboutLogoV2} />
+                </View>
+
+                <View style={styles.aboutDescriptionCard}>
+                  <ThemedText style={styles.aboutDescriptionText}>
+                    {marketInfo?.description || FALLBACK_DESCRIPTIONS[symbol] || `${fullName} is a digital cryptocurrency.`}
+                  </ThemedText>
+                </View>
+
+                <View style={styles.aboutStatsCard}>
+                  <AboutStatRow
+                    label="Market cap"
+                    value={formatCompactNumber(marketInfo?.marketCap, '₦')}
+                    showDivider
+                  />
+                  <AboutStatRow
+                    label="Volume"
+                    value={formatCompactNumber(marketInfo?.totalVolume, '₦')}
+                    showDivider
+                  />
+                  <AboutStatRow
+                    label="Circulating supply"
+                    value={formatCompactNumber(marketInfo?.circulatingSupply)}
+                  />
+                </View>
               </View>
             )}
           </View>
@@ -601,6 +734,208 @@ const styles = StyleSheet.create({
     width: '100%',
     flexGrow: 1,
   },
+
+  // ---- New balance section (matches design: small label + big amount + ngn) ----
+  balanceSectionV2: {
+    alignItems: 'center',
+    paddingVertical: 8,
+    marginBottom: 16,
+  },
+  balanceLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  balanceLabelIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    marginRight: 6,
+  },
+  balanceLabelV2: {
+    fontSize: 15,
+    color: '#374151',
+    fontWeight: '500',
+  },
+  balanceAmountV2: {
+    fontSize: 40,
+    fontWeight: '800',
+    color: '#000000',
+    textAlign: 'center',
+    letterSpacing: 0.3,
+    lineHeight: 48,
+    paddingHorizontal: 8,
+  },
+  balanceNgnV2: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#9CA3AF',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+
+  // ---- Price card with chart and time-range selector ----
+  priceCardV2: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  priceCardHeaderV2: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  priceCardLabelV2: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  priceCardInfoButton: {
+    marginLeft: 6,
+    padding: 2,
+  },
+  priceCardAmountV2: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#000000',
+    letterSpacing: 0.3,
+    marginBottom: 6,
+  },
+  priceChangeRowV2: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginBottom: 8,
+  },
+  priceChangeAmountV2: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  priceChangePctV2: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginRight: 6,
+  },
+  priceChangeSuffixV2: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    fontWeight: '500',
+  },
+  chartContainerV2: {
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  rangeSelectorV2: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#F3F4F6',
+    borderRadius: 24,
+    padding: 4,
+    marginTop: 12,
+  },
+  rangeButtonV2: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rangeButtonV2Active: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  rangeButtonTextV2: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  rangeButtonTextV2Active: {
+    color: '#000000',
+    fontWeight: '700',
+  },
+
+  // ---- About tab (header, description card, stats card) ----
+  aboutHeaderV2: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    paddingBottom: 16,
+    paddingHorizontal: 4,
+  },
+  aboutTitleV2: {
+    flex: 1,
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#000000',
+    letterSpacing: 0.3,
+    lineHeight: 38,
+    paddingRight: 12,
+  },
+  aboutLogoV2: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  aboutDescriptionCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  aboutDescriptionText: {
+    fontSize: 15,
+    color: '#1F2937',
+    lineHeight: 24,
+  },
+  aboutStatsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  aboutStatRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  aboutStatRowDivider: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5E7EB',
+  },
+  aboutStatLabel: {
+    fontSize: 15,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  aboutStatValue: {
+    fontSize: 15,
+    color: '#000000',
+    fontWeight: '700',
+  },
+
   cryptoOverviewCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
@@ -1185,11 +1520,6 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 12,
   },
-  balanceLabel: {
-    fontSize: 14,
-    color: '#6B7280',
-    fontWeight: '500',
-  },
   balanceAmountContainer: {
     width: '100%',
     marginBottom: 16,
@@ -1198,16 +1528,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     minHeight: 70,
     maxHeight: 220,
-  },
-  balanceAmount: {
-    fontSize: 40,
-    fontWeight: '800',
-    color: '#111827',
-    textAlign: 'center',
-    includeFontPadding: false,
-    textAlignVertical: 'center',
-    letterSpacing: 0.3,
-    lineHeight: 48,
   },
   balanceNGNContainer: {
     width: '100%',

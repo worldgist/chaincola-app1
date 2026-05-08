@@ -3,6 +3,8 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { creditUserWallet } from "../_shared/credit-user-wallet.ts";
+import { sendFlutterwaveWalletFundingReceiptEmail } from "../_shared/send-crypto-email.ts";
 import { sendWalletFundingNotification } from "../_shared/send-wallet-funding-notification.ts";
 
 const corsHeaders = {
@@ -40,7 +42,7 @@ serve(async (req) => {
       .eq('transaction_type', 'DEPOSIT')
       .not('external_reference', 'is', null)
       .like('external_reference', 'CHAINCOLA-%')
-      .lt('created_at', new Date(Date.now() - 60000).toISOString()) // At least 1 minute old
+      .lt('created_at', new Date(Date.now() - 10000).toISOString()) // Brief delay so webhook can run first
       .limit(50); // Process up to 50 at a time
 
     if (fetchError) {
@@ -96,30 +98,84 @@ serve(async (req) => {
 
         if (isSuccessful) {
           const totalAmount = flutterwaveResult.data.amount || tx.fiat_amount;
-          const currency = flutterwaveResult.data.currency || tx.fiat_currency || 'NGN';
-          
-          // NEW FEE MODEL: Fee is deducted from deposit amount
-          // Get credit amount from metadata (deposit - fee)
-          // If metadata not available, calculate from deposit and fee (backward compatibility)
-          const depositAmount = tx.metadata?.deposit_amount || totalAmount;
-          const feeAmount = tx.metadata?.fee_amount || (depositAmount * 0.03);
-          const creditAmount = tx.metadata?.credit_amount || (depositAmount - feeAmount);
+          const currency = String(
+            flutterwaveResult.data.currency || tx.fiat_currency || 'NGN',
+          ).toUpperCase();
 
-          // Update transaction status to COMPLETED
+          const depositAmount = tx.metadata?.deposit_amount || totalAmount;
+          const feeAmount = tx.metadata?.fee_amount || depositAmount * 0.03;
+          const creditAmount = tx.metadata?.credit_amount || depositAmount - feeAmount;
+
+          console.log(
+            `💰 Crediting wallet: ${creditAmount.toFixed(2)} ${currency} to user ${tx.user_id} (Fee: ${feeAmount.toFixed(2)} ${currency})`,
+          );
+          const creditResult = await creditUserWallet(supabase, tx.user_id, creditAmount, currency);
+
+          if (!creditResult.ok) {
+            console.error(`❌ Wallet credit failed for ${tx.id}:`, creditResult.message);
+            errors.push(`Credit ${tx.id}: ${creditResult.message}`);
+            await supabase
+              .from('transactions')
+              .update({
+                error_message: `Payment received but wallet credit failed: ${creditResult.message}`,
+                metadata: {
+                  ...tx.metadata,
+                  credit_error: creditResult.message,
+                  pending_verify_credit_at: new Date().toISOString(),
+                },
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', tx.id);
+            continue;
+          }
+
+          const prevMeta = tx.metadata || {};
+          const { credit_error: _ce, ...metaWithoutCreditErr } = prevMeta as Record<string, unknown>;
+
+          let depositFeeRecorded = prevMeta.deposit_fee_recorded === true;
+          if (feeAmount > 0 && !depositFeeRecorded) {
+            try {
+              await supabase.rpc('record_admin_revenue', {
+                p_revenue_type: 'DEPOSIT_FEE',
+                p_source: 'FLUTTERWAVE',
+                p_amount: feeAmount,
+                p_currency: currency,
+                p_fee_percentage: tx.metadata?.fee_percentage || 3.0,
+                p_base_amount: depositAmount,
+                p_transaction_id: tx.id,
+                p_user_id: tx.user_id,
+                p_metadata: {
+                  flutterwave_ref: flutterwaveResult.data.flw_ref,
+                  deposit_amount: depositAmount,
+                  credit_amount: creditAmount,
+                },
+                p_notes: `Deposit fee from Flutterwave payment (pending verification)`,
+              });
+              depositFeeRecorded = true;
+              console.log(`✅ Recorded admin revenue: ${feeAmount.toFixed(2)} ${currency} from deposit fee`);
+            } catch (revenueError) {
+              console.error(`⚠️ Error recording admin revenue for transaction ${tx.id} (non-critical):`, revenueError);
+            }
+          }
+
+          const verifiedAt = new Date().toISOString();
           const { error: updateError } = await supabase
             .from('transactions')
             .update({
               status: 'COMPLETED',
+              error_message: null,
               external_transaction_id: flutterwaveResult.data.flw_ref || flutterwaveResult.data.id?.toString(),
-              completed_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
+              completed_at: verifiedAt,
+              updated_at: verifiedAt,
               metadata: {
-                ...tx.metadata,
+                ...metaWithoutCreditErr,
+                wallet_credited_at: verifiedAt,
+                deposit_fee_recorded: depositFeeRecorded,
                 flutterwave_data: {
                   flw_ref: flutterwaveResult.data.flw_ref,
                   payment_type: flutterwaveResult.data.payment_type,
                   processor_response: flutterwaveResult.data.processor_response,
-                  verified_at: new Date().toISOString(),
+                  verified_at: verifiedAt,
                 },
               },
             })
@@ -129,87 +185,60 @@ serve(async (req) => {
             console.error(`❌ Error updating transaction ${tx.id}:`, updateError);
             errors.push(`Transaction ${tx.id}: ${updateError.message}`);
           } else {
-            console.log(`✅ Updated transaction ${tx.id} to COMPLETED (Charged: ${totalAmount} ${currency}, Deposit: ${depositAmount} ${currency}, Fee: ${feeAmount.toFixed(2)} ${currency}, Credit: ${creditAmount.toFixed(2)} ${currency})`);
+            console.log(
+              `✅ Updated transaction ${tx.id} to COMPLETED (Charged: ${totalAmount} ${currency}, Credit: ${creditAmount.toFixed(2)} ${currency})`,
+            );
             completed++;
 
-            // Credit user's wallet balance (deposit - fee)
-            console.log(`💰 Crediting wallet: ${creditAmount.toFixed(2)} ${currency} to user ${tx.user_id} (Fee deducted: ${feeAmount.toFixed(2)} ${currency})`);
-            const { error: creditError } = await supabase.rpc('credit_wallet', {
-              p_user_id: tx.user_id,
-              p_amount: creditAmount, // Credit deposit amount minus fee
-              p_currency: currency,
-            });
+            console.log(`✅ Credited ${creditAmount} ${currency} to user ${tx.user_id}`);
 
-            // Record admin revenue from deposit fee (only if fee was charged)
-            if (feeAmount > 0 && !creditError) {
+              // Create notification (only after successful credit)
               try {
-                await supabase.rpc('record_admin_revenue', {
-                  p_revenue_type: 'DEPOSIT_FEE',
-                  p_source: 'FLUTTERWAVE',
-                  p_amount: feeAmount,
-                  p_currency: currency,
-                  p_fee_percentage: tx.metadata?.fee_percentage || 3.00,
-                  p_base_amount: depositAmount,
-                  p_transaction_id: tx.id,
+                await supabase.rpc('create_notification', {
                   p_user_id: tx.user_id,
-                  p_metadata: {
-                    flutterwave_ref: flutterwaveResult.data.flw_ref,
+                  p_type: 'deposit',
+                  p_title: 'Payment successful',
+                  p_message: `Your wallet was credited with ${currency} ${creditAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${feeAmount > 0 ? ` (fee: ${feeAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}.`,
+                  p_data: {
+                    transaction_id: tx.id,
+                    amount: creditAmount,
+                    fee_amount: feeAmount,
                     deposit_amount: depositAmount,
-                    credit_amount: creditAmount,
+                    total_payment: totalAmount,
+                    currency: currency,
+                    status: 'COMPLETED',
                   },
-                  p_notes: `Deposit fee from Flutterwave payment (pending verification)`,
                 });
-                console.log(`✅ Recorded admin revenue: ${feeAmount.toFixed(2)} ${currency} from deposit fee`);
-              } catch (revenueError) {
-                console.error(`⚠️ Error recording admin revenue for transaction ${tx.id} (non-critical):`, revenueError);
-                // Don't fail the transaction if revenue recording fails
+              } catch (notifError) {
+                console.error(`⚠️ Error creating notification for transaction ${tx.id}:`, notifError);
+              }
+
+              try {
+                await sendWalletFundingNotification({
+                  supabase,
+                  userId: tx.user_id,
+                  amount: creditAmount,
+                  currency: currency,
+                  feeAmount: feeAmount,
+                  depositAmount: depositAmount,
+                  transactionId: tx.id,
+                });
+              } catch (pushError) {
+                console.error(`⚠️ Error sending push notification for transaction ${tx.id}:`, pushError);
+              }
+
+              try {
+                await sendFlutterwaveWalletFundingReceiptEmail(supabase, tx.user_id, {
+                  creditAmount,
+                  depositAmount,
+                  feeAmount,
+                  currency,
+                  transactionId: tx.id,
+                });
+              } catch (emailErr) {
+                console.error(`⚠️ Error sending wallet funding receipt email for ${tx.id}:`, emailErr);
               }
             }
-
-            if (creditError) {
-              console.error(`❌ Error crediting wallet for transaction ${tx.id}:`, creditError);
-              errors.push(`Credit ${tx.id}: ${creditError.message}`);
-            } else {
-              console.log(`✅ Credited ${depositAmount} ${currency} to user ${tx.user_id}`);
-            }
-
-            // Create notification
-            try {
-              await supabase.rpc('create_notification', {
-                p_user_id: tx.user_id,
-                p_type: 'deposit',
-                p_title: 'Wallet Funded Successfully',
-                p_message: `Your wallet has been funded with ${currency} ${creditAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${feeAmount > 0 ? ` (Fee: ${feeAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})` : ''}`,
-                p_data: {
-                  transaction_id: tx.id,
-                  amount: creditAmount,
-                  fee_amount: feeAmount,
-                  deposit_amount: depositAmount,
-                  total_payment: totalAmount,
-                  currency: currency,
-                  status: 'COMPLETED',
-                },
-              });
-            } catch (notifError) {
-              console.error(`⚠️ Error creating notification for transaction ${tx.id}:`, notifError);
-              // Don't fail the transaction if notification fails
-            }
-
-            // Send push notification for successful wallet funding
-            try {
-              await sendWalletFundingNotification({
-                supabase,
-                userId: tx.user_id,
-                amount: creditAmount,
-                currency: currency,
-                feeAmount: feeAmount,
-                transactionId: tx.id,
-              });
-            } catch (pushError) {
-              console.error(`⚠️ Error sending push notification for transaction ${tx.id}:`, pushError);
-              // Don't fail the transaction if push notification fails
-            }
-          }
         } else if (paymentStatus === 'FAILED' || paymentStatus === 'CANCELLED') {
           // Update to FAILED
           const { error: updateError } = await supabase

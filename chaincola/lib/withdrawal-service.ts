@@ -1,14 +1,33 @@
 import { supabase } from './supabase';
 import Constants from 'expo-constants';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 // Get Supabase URL from environment variables
-const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl || 
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     SUPABASE_URL;
 
-// Flutterwave Transfer API URL (VPS)
-const FLUTTERWAVE_TRANSFER_API = 'https://api.chaincola.com/api/transfer';
+function getSupabaseAnonKey(): string | undefined {
+  return (
+    Constants.expoConfig?.extra?.supabaseAnonKey ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+    SUPABASE_ANON_KEY
+  );
+}
+
+// Base URL for the chaincola-transfer Express service that proxies Flutterwave transfers.
+// Falls back to the production deployment so existing builds keep working without rebuilds.
+function getChaincolaTransferUrl(): string {
+  const url = (
+    Constants.expoConfig?.extra?.chaincolaTransferUrl ||
+    process.env.EXPO_PUBLIC_CHAINCOLA_TRANSFER_URL ||
+    process.env.NEXT_PUBLIC_CHAINCOLA_TRANSFER_URL ||
+    'https://api.chaincola.com'
+  ) as string;
+  return url.replace(/\/+$/, '');
+}
 
 // Withdrawal fee percentage (3%)
 const WITHDRAWAL_FEE_PERCENTAGE = 0.03;
@@ -43,7 +62,7 @@ async function sendWithdrawalPushNotification(
       ? `Your withdrawal of ₦${amount.toLocaleString()} has been completed successfully.`
       : `Your withdrawal of ₦${amount.toLocaleString()} has failed. Please contact support.`;
 
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/send-push-notification`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/send-push-notification`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -150,7 +169,7 @@ async function sendWithdrawalEmailNotification(
                 </tr>
               </table>
             </div>
-            ${status === 'processing' ? '<p>Your withdrawal is being processed and will be completed within 1-5 minutes.</p>' : ''}
+            ${status === 'processing' ? '<p>Your withdrawal is being processed and the funds will be transferred to your bank account instantly.</p>' : ''}
             ${status === 'failed' ? '<p>If you have any questions or concerns, please contact our support team.</p>' : ''}
             <p style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; color: #6B7280; font-size: 14px;">
               Best regards,<br>
@@ -161,7 +180,7 @@ async function sendWithdrawalEmailNotification(
       </html>
     `;
 
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/send-email`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/send-email`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -285,14 +304,16 @@ export async function getBanks(
     const { data: { session } } = await supabase.auth.getSession();
 
     // Call the get-banks Edge Function
-    const url = new URL(`${SUPABASE_URL}/functions/v1/get-banks`);
+    const url = new URL(`${supabaseUrl}/functions/v1/get-banks`);
     url.searchParams.set('country', countryCode);
 
+    const anonKey = getSupabaseAnonKey();
     const response = await fetch(url.toString(), {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        ...(session?.access_token && { 'Authorization': `Bearer ${session.access_token}` }),
+        ...(anonKey && { apikey: anonKey }),
+        ...(session?.access_token && { Authorization: `Bearer ${session.access_token}` }),
       },
     });
 
@@ -356,12 +377,14 @@ export async function verifyBankAccount(
       return { success: false, error: 'Not authenticated' };
     }
 
+    const anonKey = getSupabaseAnonKey();
     // Call the verify-account Edge Function
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/verify-account`, {
+    const response = await fetch(`${supabaseUrl}/functions/v1/verify-account`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${session.access_token}`,
+        ...(anonKey && { apikey: anonKey }),
+        Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({
         account_number: accountNumber,
@@ -709,19 +732,23 @@ export async function deleteBankAccount(
 }
 
 /**
- * Initiate Flutterwave transfer via VPS API
+ * Initiate Flutterwave transfer via Supabase Edge Function (server uses FLUTTERWAVE_SECRET_KEY)
  */
 async function initiateFlutterwaveTransfer(
   withdrawalData: WithdrawalRequest,
   withdrawalId: string
 ): Promise<{ success: boolean; data?: FlutterwaveTransferResponse['data']; error?: string }> {
   try {
+    // Route through the dedicated chaincola-transfer Express service (api.chaincola.com).
+    // It mirrors the legacy Supabase `flutterwave-transfer` Edge Function shape.
+    const transferFunctionUrl = `${getChaincolaTransferUrl()}/api/transfer/initiate`;
+
     console.log('🚀 Initiating Flutterwave transfer:', {
       withdrawalId,
       amount: withdrawalData.amount,
       bankCode: withdrawalData.bank_code,
       accountNumber: withdrawalData.account_number.substring(0, 4) + '****',
-      apiEndpoint: FLUTTERWAVE_TRANSFER_API,
+      apiEndpoint: transferFunctionUrl,
     });
 
     // Get current session for authentication
@@ -730,41 +757,31 @@ async function initiateFlutterwaveTransfer(
       return { success: false, error: 'Not authenticated' };
     }
 
-    // Prepare transfer request
     const transferRequest = {
-      account_bank: withdrawalData.bank_code || '',
-      account_number: withdrawalData.account_number,
-      amount: Math.round(withdrawalData.amount), // Flutterwave expects whole numbers for NGN
+      withdrawal_id: withdrawalId,
       narration: `Withdrawal from ChainCola - ${withdrawalId}`,
-      currency: 'NGN',
     };
 
-    console.log('📤 Sending transfer request to VPS:', {
-      url: FLUTTERWAVE_TRANSFER_API,
-      request: {
-        ...transferRequest,
-        account_number: transferRequest.account_number.substring(0, 4) + '****',
-      },
+    console.log('📤 Sending transfer request to chaincola-transfer:', {
+      url: transferFunctionUrl,
+      withdrawalId,
     });
 
-    // Call Flutterwave Transfer API on VPS with timeout
+    // Call chaincola-transfer with timeout
     let response: Response;
     const timeoutMs = 30000; // 30 second timeout
-    
+
     try {
-      // Create a timeout promise
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Request timeout - transfer service did not respond within 30 seconds')), timeoutMs);
       });
 
-      // Race between fetch and timeout
       response = await Promise.race([
-        fetch(FLUTTERWAVE_TRANSFER_API, {
+        fetch(transferFunctionUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            // Optionally include auth token if VPS requires it
-            // 'Authorization': `Bearer ${session.access_token}`,
+            Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify(transferRequest),
         }),
@@ -775,7 +792,7 @@ async function initiateFlutterwaveTransfer(
         error: networkError.message,
         errorType: networkError.name,
         withdrawalId,
-        url: FLUTTERWAVE_TRANSFER_API,
+        url: transferFunctionUrl,
       });
       
       // Determine error type for better user messaging
@@ -1157,13 +1174,28 @@ export async function submitWithdrawal(
       };
     }
 
-    // Mark withdrawal as completed immediately when transfer is successfully initiated
-    // Flutterwave bank transfers are instant, so if the transfer API call succeeds,
-    // the withdrawal is considered completed
+    // Map the Flutterwave initiation status to our local withdrawal status.
+    //
+    // Flutterwave bank transfers are NOT instant — the initial response is
+    // typically `NEW` or `PENDING`. The actual SUCCESSFUL/FAILED outcome is
+    // delivered later via the Flutterwave webhook (see chaincola-transfer's
+    // POST /api/transfer/callback) or a status poll. Treating `NEW`/`PENDING`
+    // as completed has caused real-money mismatches (debited user shown as
+    // "Withdrawal Completed" while Flutterwave actually FAILED the disbursement
+    // — e.g. "Insufficient funds in customer wallet"). Keep them as
+    // "processing" until the webhook confirms the terminal state.
     const transferStatus = transferResult.data?.status?.toUpperCase() || '';
-    
-    // Update withdrawal with transfer details - mark as completed immediately
-    const withdrawalStatus = 'completed';
+    const isTerminalSuccess =
+      transferStatus === 'SUCCESSFUL' ||
+      transferStatus === 'SUCCESS' ||
+      transferStatus === 'COMPLETED' ||
+      transferStatus === 'COMPLETE';
+
+    const withdrawalStatus = isTerminalSuccess ? 'completed' : 'processing';
+    const transactionStatus = isTerminalSuccess ? 'COMPLETED' : 'PENDING';
+    const notificationStatus = isTerminalSuccess ? 'completed' : 'processing';
+
+    // Update withdrawal with transfer details (status mapped from FW)
     const { data: updatedWithdrawal, error: updateError } = await supabase
       .from('withdrawals')
       .update({
@@ -1175,14 +1207,16 @@ export async function submitWithdrawal(
           initiated_at: new Date().toISOString(),
           fee_percentage: WITHDRAWAL_FEE_PERCENTAGE * 100,
           total_deducted: totalAmount,
+          flutterwave_initial_status: transferStatus,
         },
       })
       .eq('id', withdrawal.id)
       .select()
       .single();
 
-    // Create COMPLETED transaction record immediately since transfer was initiated successfully
-    // Bank transfers via Flutterwave are instant, so we mark as completed immediately
+    // Create transaction record matching the Flutterwave-mapped status.
+    // For NEW/PENDING transfers this stays PENDING and is flipped to
+    // COMPLETED/FAILED by chaincola-transfer's webhook handler later.
     const { error: transactionError, data: transactionData } = await supabase
       .from('transactions')
       .insert({
@@ -1194,8 +1228,8 @@ export async function submitWithdrawal(
         fee_amount: feeAmount,
         fee_percentage: WITHDRAWAL_FEE_PERCENTAGE * 100,
         fee_currency: 'NGN',
-        status: 'COMPLETED',
-        completed_at: new Date().toISOString(),
+        status: transactionStatus,
+        completed_at: isTerminalSuccess ? new Date().toISOString() : null,
         external_transaction_id: transferResult.data.id?.toString(),
         external_reference: transferResult.data.reference,
         notes: `Withdrawal to ${withdrawalData.bank_name} - ${withdrawalData.account_name}`,
@@ -1208,15 +1242,15 @@ export async function submitWithdrawal(
           withdrawal_type: 'bank_transfer',
           transfer_data: transferResult.data,
           transfer_status: transferStatus,
-          created_when: 'completed',
+          created_when: isTerminalSuccess ? 'completed' : 'pending',
         },
       })
       .select()
       .single();
 
     if (transactionError) {
-      console.error('❌ CRITICAL: Failed to create COMPLETED transaction record:', transactionError);
-      // Even though transaction record creation failed, the withdrawal was successful
+      console.error(`❌ CRITICAL: Failed to create ${transactionStatus} transaction record:`, transactionError);
+      // Even though transaction record creation failed, the withdrawal was submitted
       // Log this for manual intervention but don't fail the withdrawal
       await supabase
         .from('withdrawals')
@@ -1229,7 +1263,7 @@ export async function submitWithdrawal(
         })
         .eq('id', withdrawal.id);
     } else {
-      console.log('✅ Created COMPLETED transaction record for withdrawal:', transactionData?.id);
+      console.log(`✅ Created ${transactionStatus} transaction record for withdrawal:`, transactionData?.id);
     }
 
     if (updateError) {
@@ -1238,16 +1272,16 @@ export async function submitWithdrawal(
       // This is not critical, the webhook will handle status updates
     }
 
-    // Send notifications for withdrawal submission (marked as completed)
+    // Send notification matching the actual transfer state (Submitted vs Completed).
     try {
       await Promise.all([
-        sendWithdrawalPushNotification(userId, withdrawalData.amount, feeAmount, 'completed', withdrawal.id),
+        sendWithdrawalPushNotification(userId, withdrawalData.amount, feeAmount, notificationStatus, withdrawal.id),
         userEmail && sendWithdrawalEmailNotification(
           userId,
           userEmail,
           withdrawalData.amount,
           feeAmount,
-          'completed',
+          notificationStatus,
           withdrawal.id,
           withdrawalData.bank_name,
           withdrawalData.account_number
@@ -1354,7 +1388,7 @@ export async function getWithdrawalById(
 }
 
 /**
- * Check Flutterwave transfer status via VPS API
+ * Check Flutterwave transfer status via Supabase Edge Function
  */
 export async function checkTransferStatus(
   transferId: string
@@ -1368,17 +1402,24 @@ export async function checkTransferStatus(
       return { success: false, error: 'Not authenticated' };
     }
 
-    // Call Flutterwave Transfer API on VPS to get status
-    const response = await fetch(`${FLUTTERWAVE_TRANSFER_API}/${transferId}`, {
+    const statusUrl = new URL(`${getChaincolaTransferUrl()}/api/transfer/initiate`);
+    statusUrl.searchParams.set('id', transferId);
+
+    const response = await fetch(statusUrl.toString(), {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        // Optionally include auth token if VPS requires it
-        // 'Authorization': `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${session.access_token}`,
       },
     });
 
-    const result: FlutterwaveTransferResponse = await response.json();
+    let result: FlutterwaveTransferResponse;
+    try {
+      const text = await response.text();
+      result = text ? JSON.parse(text) : { success: false };
+    } catch {
+      return { success: false, error: 'Invalid response from transfer service' };
+    }
 
     if (!response.ok || !result.success) {
       console.error('❌ Failed to fetch transfer status:', result);

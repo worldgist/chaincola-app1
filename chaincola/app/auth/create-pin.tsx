@@ -37,7 +37,7 @@ export default function CreatePinScreen() {
     const checkEmailVerification = async () => {
       if (flow === 'signup') {
         // For signup flow, email must be verified
-        if (!(user as any)?.email_confirmed_at) {
+        if (!user?.email_confirmed_at) {
           Alert.alert(
             'Email Verification Required',
             'Please verify your email address before creating your PIN. You will be redirected to the verification screen.',

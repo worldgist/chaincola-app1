@@ -12,6 +12,7 @@ export interface SupportTicket {
   created_at: string;
   updated_at: string;
   resolved_at?: string;
+  customer_chat_display_name?: string | null;
 }
 
 export interface SupportMessage {
@@ -24,6 +25,7 @@ export interface SupportMessage {
   read_at?: string;
   created_at: string;
   updated_at: string;
+  sender_display_name?: string | null;
 }
 
 /**
@@ -101,13 +103,31 @@ export async function getSupportMessages(ticketId: string): Promise<{ messages: 
   }
 }
 
+export async function updateCustomerChatDisplayName(
+  ticketId: string,
+  userId: string,
+  displayName: string
+): Promise<{ error: any }> {
+  const trimmed = displayName.trim().slice(0, 80);
+  if (!trimmed) {
+    return { error: { message: 'Please enter a name' } };
+  }
+  const { error } = await supabase
+    .from('support_tickets')
+    .update({ customer_chat_display_name: trimmed, updated_at: new Date().toISOString() })
+    .eq('id', ticketId)
+    .eq('user_id', userId);
+  return { error: error || null };
+}
+
 /**
  * Send a message to a support ticket
  */
 export async function sendSupportMessage(
   ticketId: string,
   userId: string,
-  message: string
+  message: string,
+  senderDisplayName?: string | null
 ): Promise<{ message: SupportMessage | null; error: any }> {
   try {
     if (!message || message.trim() === '') {
@@ -116,10 +136,9 @@ export async function sendSupportMessage(
 
     console.log('📤 Sending message to ticket:', ticketId);
 
-    // Verify the ticket belongs to the user
     const { data: ticket, error: ticketError } = await supabase
       .from('support_tickets')
-      .select('id, user_id, status')
+      .select('id, user_id, status, customer_chat_display_name')
       .eq('id', ticketId)
       .eq('user_id', userId)
       .single();
@@ -129,12 +148,15 @@ export async function sendSupportMessage(
       return { message: null, error: { message: 'Ticket not found or access denied' } };
     }
 
-    // Check if ticket is closed
     if (ticket.status === 'closed') {
       return { message: null, error: { message: 'Cannot send message to a closed ticket' } };
     }
 
-    // Insert the message (user messages have is_admin = false)
+    const label =
+      (senderDisplayName && senderDisplayName.trim()) ||
+      (ticket as SupportTicket).customer_chat_display_name?.trim() ||
+      'Customer';
+
     const { data: newMessage, error: insertError } = await supabase
       .from('support_messages')
       .insert({
@@ -143,6 +165,7 @@ export async function sendSupportMessage(
         message: message.trim(),
         is_admin: false,
         is_read: false,
+        sender_display_name: label.slice(0, 80),
       })
       .select()
       .single();
@@ -303,6 +326,55 @@ export async function getTicketUnreadCount(
     console.error('Exception fetching unread count:', error);
     return { count: 0, error };
   }
+}
+
+export type SupportChatRole = 'customer' | 'agent';
+
+export type RemoteTypingCallback = (p: { name: string; active: boolean }) => void;
+
+export function attachSupportTypingBridge(
+  ticketId: string,
+  viewerRole: SupportChatRole,
+  onRemote: RemoteTypingCallback
+): {
+  sendTyping: (displayName: string, state: 'start' | 'stop') => Promise<void>;
+  cleanup: () => void;
+} {
+  const channel = supabase.channel(`support_typing:${ticketId}`, {
+    config: { broadcast: { self: false } },
+  });
+
+  channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
+    const p = payload as { from?: string; name?: string; state?: string };
+    if (!p || p.from === viewerRole) return;
+    onRemote({
+      name: typeof p.name === 'string' && p.name.trim() ? p.name.trim() : 'Someone',
+      active: p.state === 'start',
+    });
+  });
+
+  channel.subscribe();
+
+  return {
+    sendTyping: async (displayName: string, state: 'start' | 'stop') => {
+      const name =
+        displayName.trim() ||
+        (viewerRole === 'agent' ? 'Support' : 'Customer');
+      await channel.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { from: viewerRole, name: name.slice(0, 80), state },
+      });
+    },
+    cleanup: () => {
+      void channel.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { from: viewerRole, name: '', state: 'stop' },
+      });
+      supabase.removeChannel(channel);
+    },
+  };
 }
 
 

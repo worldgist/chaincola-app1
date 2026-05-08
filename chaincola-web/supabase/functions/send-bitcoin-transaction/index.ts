@@ -183,7 +183,7 @@ serve(async (req) => {
     // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
     const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
                           Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                          'https://bitcoin-mainnet.g.alchemy.com/v2/3L_iw-7-b25_bzLHmLyUJ';
+                          'https://bitcoin-mainnet.g.alchemy.com/v2/rq1GQ1LbhwToT3n4E6IIB';
     const alchemyUrl = bitcoinRpcUrl;
 
     // Estimate transaction fee (in BTC)
@@ -251,16 +251,17 @@ serve(async (req) => {
     // The decrypted key exists ONLY in memory and is immediately discarded.
     // ============================================================
     
-    // Get encryption key from Supabase Secrets
-    const encryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') || 
-                         Deno.env.get('CRYPTO_ENCRYPTION_KEY') || 
-                         Deno.env.get('ETH_ENCRYPTION_KEY') ||
-                         Deno.env.get('TRON_ENCRYPTION_KEY');
-    
-    if (!encryptionKey) {
-      console.error('❌ Encryption key not set in Supabase secrets');
+    const possibleEncryptionKeys = [
+      Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
+      Deno.env.get('BTC_ENCRYPTION_KEY'),
+      Deno.env.get('ETH_ENCRYPTION_KEY'),
+      Deno.env.get('TRON_ENCRYPTION_KEY'),
+    ].filter((k): k is string => !!k && k.length > 0);
+
+    if (possibleEncryptionKeys.length === 0) {
+      console.error('❌ Encryption key not set in Supabase Edge Function secrets');
       return new Response(
-        JSON.stringify({ success: false, error: 'Encryption key not configured. Please set BTC_ENCRYPTION_KEY or CRYPTO_ENCRYPTION_KEY in Supabase secrets.' }),
+        JSON.stringify({ success: false, error: 'Encryption key not configured. Set CRYPTO_ENCRYPTION_KEY (recommended) or BTC_ENCRYPTION_KEY in Supabase → Edge Functions → Secrets.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -272,8 +273,19 @@ serve(async (req) => {
     try {
       console.log('🔓 Decrypting private key for transaction signing (ONLY time decryption happens)...');
       
-      // Decrypt private key - exists ONLY in memory
-      privateKey = await decryptPrivateKey(btcWallet.private_key_encrypted, encryptionKey);
+      let decryptErr: Error | null = null;
+      for (const encryptionKey of possibleEncryptionKeys) {
+        try {
+          privateKey = await decryptPrivateKey(btcWallet.private_key_encrypted, encryptionKey);
+          break;
+        } catch (e: unknown) {
+          decryptErr = e instanceof Error ? e : new Error(String(e));
+          privateKey = null;
+        }
+      }
+      if (!privateKey) {
+        throw decryptErr || new Error('Failed to decrypt with any configured key');
+      }
       
       // Validate private key format (should be 64 hex characters for WIF or hex)
       if (!privateKey || privateKey.length < 32) {

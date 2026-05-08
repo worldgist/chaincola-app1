@@ -76,11 +76,26 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Missing Supabase env (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Get Alchemy Solana API URL
-    const alchemyApiKey = Deno.env.get('ALCHEMY_API_KEY') || '3L_iw-7-b25_bzLHmLyUJ';
-    const alchemyUrl = Deno.env.get('ALCHEMY_SOLANA_URL') || `https://solana-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
+    const alchemyUrl =
+      Deno.env.get('ALCHEMY_SOLANA_URL') ||
+      (Deno.env.get('ALCHEMY_API_KEY')
+        ? `https://solana-mainnet.g.alchemy.com/v2/${Deno.env.get('ALCHEMY_API_KEY')}`
+        : '');
+    if (!alchemyUrl) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Missing Alchemy secret (ALCHEMY_SOLANA_URL or ALCHEMY_API_KEY)' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Get all active Solana wallet addresses
     const { data: wallets, error: walletsError } = await supabase
@@ -120,7 +135,7 @@ serve(async (req) => {
             method: 'getSignaturesForAddress',
             params: [
               wallet.address,
-              { limit: 50 }
+              { limit: 50, commitment: 'finalized' }
             ],
             id: 1,
           }),
@@ -182,7 +197,7 @@ serve(async (req) => {
               method: 'getTransaction',
               params: [
                 signature,
-                { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }
+                { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0, commitment: 'finalized' }
               ],
               id: 2,
             }),
@@ -233,16 +248,10 @@ serve(async (req) => {
           if (amountSol <= 0) continue;
 
           // Determine status based on confirmation status
-          let status: 'PENDING' | 'CONFIRMING' | 'CONFIRMED' = 'PENDING';
-          let confirmations = 0;
-
-          if (confirmationStatus === 'finalized') {
-            status = 'CONFIRMED';
-            confirmations = MIN_CONFIRMATIONS;
-          } else if (confirmationStatus === 'confirmed') {
-            status = 'CONFIRMING';
-            confirmations = 20; // Estimated
-          }
+          // We request finalized data; treat all processed deposits as confirmed
+          // (Some RPC nodes may still include confirmationStatus; keep it in metadata)
+          const status: 'CONFIRMED' = 'CONFIRMED';
+          const confirmations = MIN_CONFIRMATIONS;
 
           if (!existingTx) {
             // Get SOL price in NGN to calculate fiat amount

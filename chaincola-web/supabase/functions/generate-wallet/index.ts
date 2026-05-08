@@ -212,11 +212,11 @@ serve(async (req) => {
         const publicKeyHex = Array.from(publicKeyBytes).map((b) => (b as number).toString(16).padStart(2, '0')).join('');
         
         // Encrypt private key before storage
-        const encryptionKey = Deno.env.get('BTC_ENCRYPTION_KEY') ||
-                             Deno.env.get('CRYPTO_ENCRYPTION_KEY');
+        const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') ||
+                             Deno.env.get('BTC_ENCRYPTION_KEY');
         
         if (!encryptionKey) {
-          throw new Error('BTC_ENCRYPTION_KEY or CRYPTO_ENCRYPTION_KEY not set in Supabase secrets');
+          throw new Error('CRYPTO_ENCRYPTION_KEY or BTC_ENCRYPTION_KEY not set in Supabase Edge Function secrets');
         }
         
         const encryptedPrivateKey = await encryptPrivateKey(privateKeyHex, encryptionKey);
@@ -346,10 +346,11 @@ serve(async (req) => {
         
         // Encrypt private key before storage
         const encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') || 
-                             Deno.env.get('ETH_ENCRYPTION_KEY');
+                             Deno.env.get('ETH_ENCRYPTION_KEY') ||
+                             Deno.env.get('SOL_ENCRYPTION_KEY');
         
         if (!encryptionKey) {
-          throw new Error('CRYPTO_ENCRYPTION_KEY or ETH_ENCRYPTION_KEY not set in Supabase secrets');
+          throw new Error('CRYPTO_ENCRYPTION_KEY (or ETH_ENCRYPTION_KEY / SOL_ENCRYPTION_KEY) not set in Supabase Edge Function secrets');
         }
         
         const encryptedPrivateKey = await encryptPrivateKey(privateKeyHex, encryptionKey);

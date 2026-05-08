@@ -1,0 +1,59 @@
+import { useEffect } from 'react';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import * as Linking from 'expo-linking';
+import { router } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+import { parseSupabaseAuthTokensFromUrl } from '@/lib/supabase-auth-redirect';
+
+/**
+ * Target route for Supabase email redirects (signup / password recovery).
+ */
+export default function AuthCallbackScreen() {
+  useEffect(() => {
+    const applySession = async (url: string | null) => {
+      if (!url || !url.includes('access_token=') || !url.includes('refresh_token=')) {
+        router.replace('/auth/signin');
+        return;
+      }
+      const parsed = parseSupabaseAuthTokensFromUrl(url);
+      if (!parsed.access_token || !parsed.refresh_token) {
+        router.replace('/auth/signin');
+        return;
+      }
+      const { error } = await supabase.auth.setSession({
+        access_token: parsed.access_token,
+        refresh_token: parsed.refresh_token,
+      });
+      if (error) {
+        router.replace('/auth/signin');
+        return;
+      }
+      if (parsed.type === 'recovery') {
+        router.replace('/auth/reset-password');
+      } else {
+        router.replace('/(tabs)');
+      }
+    };
+
+    void Linking.getInitialURL().then(applySession);
+    const sub = Linking.addEventListener('url', (e) => {
+      void applySession(e.url);
+    });
+    return () => sub.remove();
+  }, []);
+
+  return (
+    <View style={styles.container}>
+      <ActivityIndicator size="large" />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+});

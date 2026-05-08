@@ -21,15 +21,25 @@ import {
   getSupportMessages,
   sendSupportMessage,
   markMessagesAsRead,
+  updateCustomerChatDisplayName,
+  attachSupportTypingBridge,
   type SupportMessage,
+  type SupportTicket,
 } from '@/lib/support-chat-service';
 import { supabase } from '@/lib/supabase';
+import {
+  SUPPORT_QUICK_TOPICS_FALLBACK,
+  fetchSupportQuickTopics,
+  type SupportQuickTopic,
+} from '@/lib/support-chat-quick-topics';
 
 interface Message {
   id: string;
   text: string;
   isUser: boolean;
   timestamp: string;
+  senderLabel: string;
+  isLocalFaq?: boolean;
 }
 
 export default function ChatSupportScreen() {
@@ -39,15 +49,26 @@ export default function ChatSupportScreen() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [ticketId, setTicketId] = useState<string | null>(null);
+  const [displayName, setDisplayName] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [remoteTyping, setRemoteTyping] = useState<{ name: string } | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
+  const typingBridgeRef = useRef<ReturnType<typeof attachSupportTypingBridge> | null>(null);
+  const typingDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [quickTopics, setQuickTopics] = useState<SupportQuickTopic[]>(SUPPORT_QUICK_TOPICS_FALLBACK);
 
   // Convert SupportMessage to Message format
-  const convertToMessage = (msg: SupportMessage): Message => ({
-    id: msg.id,
-    text: msg.message,
-    isUser: !msg.is_admin,
-    timestamp: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-  });
+  const convertToMessage = (msg: SupportMessage): Message => {
+    const raw = msg.sender_display_name?.trim();
+    return {
+      id: msg.id,
+      text: msg.message,
+      isUser: !msg.is_admin,
+      timestamp: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      senderLabel: raw || (msg.is_admin ? 'Support' : 'Customer'),
+    };
+  };
 
   // Load ticket and messages
   const loadChat = useCallback(async () => {
@@ -62,7 +83,7 @@ export default function ChatSupportScreen() {
       // Get or create a support ticket
       const { ticket, error: ticketError } = await getOrCreateSupportTicket(
         user.id,
-        'Chat Support',
+        'Live Chat',
         'general'
       );
 
@@ -74,6 +95,7 @@ export default function ChatSupportScreen() {
       }
 
       setTicketId(ticket.id);
+      setDisplayName(((ticket as SupportTicket).customer_chat_display_name ?? '').trim());
 
       // Get messages for the ticket
       const { messages: supportMessages, error: messagesError } = await getSupportMessages(ticket.id);
@@ -110,16 +132,75 @@ export default function ChatSupportScreen() {
   );
 
   useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+    void fetchSupportQuickTopics().then(({ topics }) => {
+      if (!cancelled) setQuickTopics(topics);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
     // Auto-scroll to bottom when new messages arrive
     setTimeout(() => {
       scrollViewRef.current?.scrollToEnd({ animated: true });
     }, 100);
   }, [messages]);
 
+  const flushTypingTimers = () => {
+    if (typingDebounceRef.current) {
+      clearTimeout(typingDebounceRef.current);
+      typingDebounceRef.current = null;
+    }
+    if (typingIdleRef.current) {
+      clearTimeout(typingIdleRef.current);
+      typingIdleRef.current = null;
+    }
+  };
+
+  const pingTypingFromComposer = (text: string) => {
+    const bridge = typingBridgeRef.current;
+    if (!bridge || !ticketId) return;
+    const name = displayName.trim() || 'Customer';
+    if (!text.trim()) {
+      flushTypingTimers();
+      void bridge.sendTyping(name, 'stop');
+      return;
+    }
+    if (typingDebounceRef.current) clearTimeout(typingDebounceRef.current);
+    typingDebounceRef.current = setTimeout(() => {
+      typingDebounceRef.current = null;
+      void bridge.sendTyping(name, 'start');
+      if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
+      typingIdleRef.current = setTimeout(() => {
+        typingIdleRef.current = null;
+        void bridge.sendTyping(name, 'stop');
+      }, 2500);
+    }, 400);
+  };
+
+  const handleSaveDisplayName = async () => {
+    if (!ticketId || !user?.id) return;
+    setSavingName(true);
+    const { error } = await updateCustomerChatDisplayName(ticketId, user.id, displayName);
+    setSavingName(false);
+    if (error) {
+      Alert.alert('Error', error.message || 'Could not save name');
+    }
+  };
+
   const handleSend = async () => {
     if (message.trim() === '' || !ticketId || !user?.id || sending) return;
 
     const messageText = message.trim();
+    flushTypingTimers();
+    const bridge = typingBridgeRef.current;
+    if (bridge) {
+      const n = displayName.trim() || 'Customer';
+      void bridge.sendTyping(n, 'stop');
+    }
     setMessage('');
     setSending(true);
 
@@ -129,12 +210,18 @@ export default function ChatSupportScreen() {
       text: messageText,
       isUser: true,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      senderLabel: displayName.trim() || 'You',
     };
     setMessages((prev) => [...prev, tempMessage]);
 
     try {
       // Send message to support ticket
-      const { message: newMessage, error } = await sendSupportMessage(ticketId, user.id, messageText);
+      const { message: newMessage, error } = await sendSupportMessage(
+        ticketId,
+        user.id,
+        messageText,
+        displayName.trim() || null
+      );
 
       if (error || !newMessage) {
         console.error('Error sending message:', error);
@@ -145,10 +232,13 @@ export default function ChatSupportScreen() {
         return;
       }
 
-      // Replace temp message with real message
-      setMessages((prev) => prev.map((msg) => 
-        msg.id === tempMessage.id ? convertToMessage(newMessage) : msg
-      ));
+      // Replace temp with real row; drop any duplicate of the real id (realtime may have appended first)
+      setMessages((prev) => {
+        const withoutRealDup = prev.filter((m) => m.id !== newMessage.id);
+        return withoutRealDup.map((msg) =>
+          msg.id === tempMessage.id ? convertToMessage(newMessage) : msg
+        );
+      });
     } catch (error: any) {
       console.error('Exception sending message:', error);
       // Remove optimistic message on error
@@ -158,6 +248,78 @@ export default function ChatSupportScreen() {
       setSending(false);
     }
   };
+
+  const handleQuickTopic = async (topic: SupportQuickTopic) => {
+    if (!ticketId || !user?.id || sending || loading) return;
+    const messageText = topic.prompt;
+    flushTypingTimers();
+    const bridge = typingBridgeRef.current;
+    if (bridge) void bridge.sendTyping(displayName.trim() || 'Customer', 'stop');
+
+    const tempMessage: Message = {
+      id: `temp-${Date.now()}`,
+      text: messageText,
+      isUser: true,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      senderLabel: displayName.trim() || 'You',
+    };
+    const guideId = `local-faq-${topic.id}-${Date.now()}`;
+    const guideMessage: Message = {
+      id: guideId,
+      text: topic.autoReply,
+      isUser: false,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      senderLabel: 'ChainCola',
+      isLocalFaq: true,
+    };
+
+    setSending(true);
+    setMessages((prev) => [...prev, tempMessage, guideMessage]);
+
+    try {
+      const { message: newMessage, error } = await sendSupportMessage(
+        ticketId,
+        user.id,
+        messageText,
+        displayName.trim() || null
+      );
+
+      if (error || !newMessage) {
+        setMessages((prev) => prev.filter((m) => m.id !== tempMessage.id && m.id !== guideId));
+        Alert.alert('Error', 'Failed to send message. Please try again.');
+        setSending(false);
+        return;
+      }
+
+      setMessages((prev) => {
+        const withoutRealDup = prev.filter((m) => m.id !== newMessage.id);
+        return withoutRealDup.map((msg) =>
+          msg.id === tempMessage.id ? convertToMessage(newMessage) : msg
+        );
+      });
+    } catch {
+      setMessages((prev) => prev.filter((m) => m.id !== tempMessage.id && m.id !== guideId));
+      Alert.alert('Error', 'Failed to send message. Please try again.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  useEffect(() => {
+    typingBridgeRef.current?.cleanup();
+    typingBridgeRef.current = null;
+    setRemoteTyping(null);
+    if (!ticketId || !user?.id) return;
+    const bridge = attachSupportTypingBridge(ticketId, 'customer', ({ name, active }) => {
+      setRemoteTyping(active ? { name } : null);
+    });
+    typingBridgeRef.current = bridge;
+    return () => {
+      bridge.cleanup();
+      if (typingBridgeRef.current === bridge) typingBridgeRef.current = null;
+      setRemoteTyping(null);
+    };
+  }, [ticketId, user?.id]);
 
   // Real-time subscription for new messages (admin replies)
   useEffect(() => {
@@ -250,8 +412,8 @@ export default function ChatSupportScreen() {
           <MaterialIcons name="arrow-back" size={24} color="#11181C" />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          <ThemedText style={styles.headerTitle}>Chat Support</ThemedText>
-          <ThemedText style={styles.headerSubtitle}>We're here to help</ThemedText>
+          <ThemedText style={styles.headerTitle}>Live Chat</ThemedText>
+          <ThemedText style={styles.headerSubtitle}>Real-time messaging with our team</ThemedText>
         </View>
         <View style={styles.placeholder} />
       </View>
@@ -275,7 +437,24 @@ export default function ChatSupportScreen() {
           >
             {messages.length === 0 ? (
               <View style={styles.emptyContainer}>
-                <ThemedText style={styles.emptyText}>No messages yet. Start the conversation!</ThemedText>
+                <ThemedText style={styles.emptyLead}>
+                  What do you need help with? Tap a topic — we will send it to support and show a quick reply here
+                  right away.
+                </ThemedText>
+                <View style={styles.chipWrap}>
+                  {quickTopics.map((topic) => (
+                    <TouchableOpacity
+                      key={topic.id}
+                      style={[styles.chip, (!ticketId || sending) && styles.chipDisabled]}
+                      onPress={() => void handleQuickTopic(topic)}
+                      disabled={!ticketId || sending || loading}
+                      activeOpacity={0.85}
+                    >
+                      <ThemedText style={styles.chipText}>{topic.label}</ThemedText>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <ThemedText style={styles.emptyHint}>Or type your own message below.</ThemedText>
               </View>
             ) : (
               messages.map((msg) => (
@@ -289,13 +468,34 @@ export default function ChatSupportScreen() {
                   <View
                     style={[
                       styles.messageBubble,
-                      msg.isUser ? styles.userMessageBubble : styles.supportMessageBubble,
+                      msg.isUser
+                        ? styles.userMessageBubble
+                        : msg.isLocalFaq
+                          ? styles.faqMessageBubble
+                          : styles.supportMessageBubble,
                     ]}
                   >
                     <ThemedText
                       style={[
+                        styles.senderLabel,
+                        msg.isUser
+                          ? styles.userSenderLabel
+                          : msg.isLocalFaq
+                            ? styles.faqSenderLabel
+                            : styles.supportSenderLabel,
+                      ]}
+                    >
+                      {msg.senderLabel}
+                      {msg.isLocalFaq ? ' · Auto-reply' : ''}
+                    </ThemedText>
+                    <ThemedText
+                      style={[
                         styles.messageText,
-                        msg.isUser ? styles.userMessageText : styles.supportMessageText,
+                        msg.isUser
+                          ? styles.userMessageText
+                          : msg.isLocalFaq
+                            ? styles.faqMessageText
+                            : styles.supportMessageText,
                       ]}
                     >
                       {msg.text}
@@ -303,7 +503,11 @@ export default function ChatSupportScreen() {
                     <ThemedText
                       style={[
                         styles.messageTime,
-                        msg.isUser ? styles.userMessageTime : styles.supportMessageTime,
+                        msg.isUser
+                          ? styles.userMessageTime
+                          : msg.isLocalFaq
+                            ? styles.faqMessageTime
+                            : styles.supportMessageTime,
                       ]}
                     >
                       {msg.timestamp}
@@ -312,8 +516,30 @@ export default function ChatSupportScreen() {
                 </View>
               ))
             )}
+            {remoteTyping ? (
+              <ThemedText style={styles.typingHint}>{remoteTyping.name} is typing…</ThemedText>
+            ) : null}
           </ScrollView>
         )}
+
+        <View style={styles.nameBar}>
+          <TextInput
+            style={styles.nameInput}
+            placeholder="Your name (e.g. Mary)"
+            placeholderTextColor="#9CA3AF"
+            value={displayName}
+            onChangeText={setDisplayName}
+            maxLength={80}
+            editable={!loading && !!ticketId}
+          />
+          <TouchableOpacity
+            style={[styles.saveNameBtn, (!displayName.trim() || savingName || loading || !ticketId) && styles.saveNameBtnDisabled]}
+            onPress={() => void handleSaveDisplayName()}
+            disabled={!displayName.trim() || savingName || loading || !ticketId}
+          >
+            <ThemedText style={styles.saveNameBtnText}>{savingName ? '…' : 'Save'}</ThemedText>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.inputContainer}>
           <TextInput
@@ -321,7 +547,10 @@ export default function ChatSupportScreen() {
             placeholder="Type your message..."
             placeholderTextColor="#9CA3AF"
             value={message}
-            onChangeText={setMessage}
+            onChangeText={(t) => {
+              setMessage(t);
+              pingTypingFromComposer(t);
+            }}
             multiline
             maxLength={500}
           />
@@ -420,6 +649,59 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3F4F6',
     borderBottomLeftRadius: 4,
   },
+  senderLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  userSenderLabel: {
+    color: 'rgba(255,255,255,0.85)',
+  },
+  supportSenderLabel: {
+    color: '#6B7280',
+  },
+  typingHint: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontStyle: 'italic',
+    paddingVertical: 8,
+    textAlign: 'center',
+  },
+  nameBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  nameInput: {
+    flex: 1,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    color: '#11181C',
+  },
+  saveNameBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#E9D5FF',
+  },
+  saveNameBtnDisabled: {
+    opacity: 0.5,
+  },
+  saveNameBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#5B21B6',
+  },
   messageText: {
     fontSize: 15,
     lineHeight: 20,
@@ -498,6 +780,57 @@ const styles = StyleSheet.create({
     fontSize: 16,
     opacity: 0.7,
     textAlign: 'center',
+  },
+  emptyLead: {
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    color: '#4B5563',
+    marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 16,
+  },
+  chip: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+  },
+  chipDisabled: {
+    opacity: 0.5,
+  },
+  chipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#5B21B6',
+  },
+  emptyHint: {
+    fontSize: 13,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
+  faqMessageBubble: {
+    backgroundColor: '#EEF2FF',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+  },
+  faqSenderLabel: {
+    color: '#4338CA',
+  },
+  faqMessageText: {
+    color: '#1E1B4B',
+  },
+  faqMessageTime: {
+    color: '#6366F1',
   },
 });
 

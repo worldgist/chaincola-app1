@@ -1,13 +1,14 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
 // Get Supabase URL for Edge Function
-const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl || 
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     SUPABASE_URL;
 
-const VERIFY_JAMB_PROFILE_URL = `${SUPABASE_URL}/functions/v1/verify-jamb-profile`;
+const VERIFY_JAMB_PROFILE_URL = `${supabaseUrl}/functions/v1/verify-jamb-profile`;
 
 export interface VerifyJambProfileRequest {
   profilecode: string; // Required: 10-digit JAMB profile code
@@ -73,7 +74,7 @@ export async function verifyJambProfile(
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                            process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                           SUPABASE_ANON_KEY;
 
     console.log('📡 Verifying JAMB profile code via Edge Function');
 

@@ -24,6 +24,19 @@ interface ViewRequest {
   offset?: number;
 }
 
+/** supabase.functions.invoke returns { data, error } — not a fetch Response (no .json()). */
+function logFunctionInvokeResult(label: string, data: unknown, error: unknown) {
+  if (error) {
+    console.error(`⚠️ ${label} invoke error:`, error);
+    return;
+  }
+  const d = data as { success?: boolean; error?: string; message?: string; skipped?: boolean } | null;
+  console.log(`📤 ${label} result:`, JSON.stringify(data, null, 2));
+  if (d && d.success === false) {
+    console.error(`⚠️ ${label} reported failure:`, d.error || d.message);
+  }
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -195,30 +208,25 @@ serve(async (req) => {
                 body: pushBody,
               });
               
-              const pushResponse = await supabase.functions.invoke('send-push-notification', {
-                body: {
-                  userId: resultData.user_id,
-                  title: pushTitle,
-                  body: pushBody,
-                  data: {
-                    type: 'kyc_approved',
-                    verification_id: approveParams.verification_id,
-                    action: 'reload_app',
+              const { data: pushResult, error: pushInvokeError } = await supabase.functions.invoke(
+                'send-push-notification',
+                {
+                  body: {
+                    userId: resultData.user_id,
+                    title: pushTitle,
+                    body: pushBody,
+                    data: {
+                      type: 'kyc_approved',
+                      verification_id: approveParams.verification_id,
+                      action: 'reload_app',
+                    },
+                    priority: 'high',
+                    sound: 'default',
+                    color: '#6B46C1', // Purple color matching ChainCola brand
                   },
-                  priority: 'high',
-                  sound: 'default',
-                  color: '#6B46C1', // Purple color matching ChainCola brand
                 },
-              });
-              
-              const pushResult = await pushResponse.json();
-              console.log('📤 Push notification response:', JSON.stringify(pushResult, null, 2));
-              
-              if (pushResult.success) {
-                console.log('✅ Push notification sent for approval');
-              } else {
-                console.error('⚠️ Push notification failed:', pushResult.error);
-              }
+              );
+              logFunctionInvokeResult('send-push-notification (approve)', pushResult, pushInvokeError);
             } catch (pushError: any) {
               console.error('⚠️ Failed to send push notification:', {
                 error: pushError?.message || pushError?.toString(),
@@ -403,7 +411,7 @@ serve(async (req) => {
                   has_html: !!emailHtml,
                 });
                 
-                const emailResponse = await supabase.functions.invoke('send-email', {
+                const { data: emailResult, error: emailInvokeError } = await supabase.functions.invoke('send-email', {
                   body: {
                     to: resultData.user_email,
                     subject: emailSubject,
@@ -412,15 +420,7 @@ serve(async (req) => {
                     type: 'verification_approved',
                   },
                 });
-                
-                const emailResult = await emailResponse.json();
-                console.log('📧 Email notification response:', JSON.stringify(emailResult, null, 2));
-                
-                if (emailResult.success) {
-                  console.log('✅ Email notification sent for approval');
-                } else {
-                  console.error('⚠️ Email notification failed:', emailResult.error);
-                }
+                logFunctionInvokeResult('send-email (approve)', emailResult, emailInvokeError);
               } catch (emailError: any) {
                 console.error('⚠️ Failed to send email notification:', {
                   error: emailError?.message || emailError?.toString(),
@@ -543,28 +543,23 @@ serve(async (req) => {
                 body: pushBody,
               });
               
-              const pushResponse = await supabase.functions.invoke('send-push-notification', {
-                body: {
-                  userId: resultData.user_id,
-                  title: pushTitle,
-                  body: pushBody,
-                  data: {
-                    type: notificationData?.type || 'verification_rejected',
-                    verification_id: rejectParams.verification_id,
-                    rejection_reason: rejectParams.rejection_reason,
+              const { data: pushResult, error: pushInvokeError } = await supabase.functions.invoke(
+                'send-push-notification',
+                {
+                  body: {
+                    userId: resultData.user_id,
+                    title: pushTitle,
+                    body: pushBody,
+                    data: {
+                      type: notificationData?.type || 'verification_rejected',
+                      verification_id: rejectParams.verification_id,
+                      rejection_reason: rejectParams.rejection_reason,
+                    },
+                    priority: 'high',
                   },
-                  priority: 'high',
                 },
-              });
-              
-              const pushResult = await pushResponse.json();
-              console.log('📤 Push notification response:', JSON.stringify(pushResult, null, 2));
-              
-              if (pushResult.success) {
-                console.log('✅ Push notification sent for rejection');
-              } else {
-                console.error('⚠️ Push notification failed:', pushResult.error);
-              }
+              );
+              logFunctionInvokeResult('send-push-notification (reject)', pushResult, pushInvokeError);
             } catch (pushError: any) {
               console.error('⚠️ Failed to send push notification:', {
                 error: pushError?.message || pushError?.toString(),
@@ -829,7 +824,7 @@ serve(async (req) => {
                   has_html: !!emailHtml,
                 });
                 
-                const emailResponse = await supabase.functions.invoke('send-email', {
+                const { data: emailResult, error: emailInvokeError } = await supabase.functions.invoke('send-email', {
                   body: {
                     to: resultData.user_email,
                     subject: emailSubject,
@@ -838,15 +833,7 @@ serve(async (req) => {
                     type: 'verification_rejected',
                   },
                 });
-                
-                const emailResult = await emailResponse.json();
-                console.log('📧 Email notification response:', JSON.stringify(emailResult, null, 2));
-                
-                if (emailResult.success) {
-                  console.log('✅ Email notification sent for rejection');
-                } else {
-                  console.error('⚠️ Email notification failed:', emailResult.error);
-                }
+                logFunctionInvokeResult('send-email (reject)', emailResult, emailInvokeError);
               } catch (emailError: any) {
                 console.error('⚠️ Failed to send email notification:', {
                   error: emailError?.message || emailError?.toString(),

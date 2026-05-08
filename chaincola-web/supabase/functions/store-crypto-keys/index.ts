@@ -163,9 +163,9 @@ serve(async (req) => {
       let encryptionKey: string | undefined;
       
       if (targetAsset === 'ETH' || targetAsset === 'ETHEREUM') {
-        encryptionKey = Deno.env.get('ETH_ENCRYPTION_KEY') || 
-                       Deno.env.get('CRYPTO_ENCRYPTION_KEY');
-        console.log(`🔑 ETH: Using encryption key: ${Deno.env.get('ETH_ENCRYPTION_KEY') ? 'ETH_ENCRYPTION_KEY' : 'CRYPTO_ENCRYPTION_KEY'}`);
+        encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') || 
+                       Deno.env.get('ETH_ENCRYPTION_KEY');
+        console.log(`🔑 ETH: Using encryption key: ${Deno.env.get('CRYPTO_ENCRYPTION_KEY') ? 'CRYPTO_ENCRYPTION_KEY' : 'ETH_ENCRYPTION_KEY'}`);
       } else {
         // For other assets (BTC, SOL), use CRYPTO_ENCRYPTION_KEY or ETH_ENCRYPTION_KEY
         encryptionKey = Deno.env.get('CRYPTO_ENCRYPTION_KEY') || 
@@ -180,13 +180,11 @@ serve(async (req) => {
           CRYPTO_ENCRYPTION_KEY: !!Deno.env.get('CRYPTO_ENCRYPTION_KEY'),
           BTC_ENCRYPTION_KEY: !!Deno.env.get('BTC_ENCRYPTION_KEY'),
         });
-        const keyName = targetAsset === 'ETH' ? 'ETH_ENCRYPTION_KEY' 
-                       : targetAsset === 'BTC' ? 'BTC_ENCRYPTION_KEY'
-                       : 'CRYPTO_ENCRYPTION_KEY';
+        const keyName = 'CRYPTO_ENCRYPTION_KEY';
         results.push({
           asset: targetAsset,
           success: false,
-          error: `Encryption key not configured. Please set ${keyName} or CRYPTO_ENCRYPTION_KEY in Supabase secrets.`,
+          error: `Encryption key not configured. Set CRYPTO_ENCRYPTION_KEY in Supabase Edge Function secrets (or legacy ${targetAsset === 'ETH' ? 'ETH' : targetAsset === 'BTC' ? 'BTC' : 'asset-specific'}_ENCRYPTION_KEY).`,
         });
         continue;
       }

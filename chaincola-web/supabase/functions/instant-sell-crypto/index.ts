@@ -5,6 +5,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoSellNotification } from "../_shared/send-crypto-sell-notification.ts";
+import { evaluateInstantSell } from "../_shared/treasury-trade-gates.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -89,6 +90,9 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    const sellEval = await evaluateInstantSell(supabase, cryptoCurrency, corsHeaders, cryptoAmount);
+    if (!sellEval.ok) return sellEval.response;
 
     console.log(`💰 Instant sell request: User=${user.id}, Crypto=${cryptoCurrency}, Amount=${cryptoAmount}, Price=₦${pricePerUnit}`);
 

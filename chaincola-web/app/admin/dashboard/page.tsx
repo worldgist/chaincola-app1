@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
-import { adminApi, transactionsApi, cryptoApi, dashboardApi, notificationsApi, referralApi, chatSupportApi, withdrawalApi, appSettingsApi, verificationApi, revenueApi, type User as ApiUser, type Transaction as ApiTransaction, type CryptoOverview, type DashboardStats, type QuickStats, type SystemHealth, type Notification as ApiNotification, type NotificationStats, type ReferralCode as ApiReferralCode, type ReferralOverview, type ReferralStats, type TopReferrer, type SupportTicket as ApiSupportTicket, type SupportMessage as ApiSupportMessage, type ChatStatistics, type Withdrawal as ApiWithdrawal, type WithdrawalStats, type AppSettings, type Verification, type RevenueStats, type RevenueRecord } from '@/lib/admin-api';
+import { adminApi, transactionsApi, cryptoApi, dashboardApi, notificationsApi, referralApi, chatSupportApi, withdrawalApi, appSettingsApi, verificationApi, revenueApi, normalizeCryptoAssetStatusMap, cryptoAssetStatusToDisplay, type User as ApiUser, type Transaction as ApiTransaction, type CryptoOverview, type DashboardStats, type QuickStats, type SystemHealth, type Notification as ApiNotification, type NotificationStats, type ReferralCode as ApiReferralCode, type ReferralOverview, type ReferralStats, type TopReferrer, type SupportTicket as ApiSupportTicket, type SupportMessage as ApiSupportMessage, type ChatStatistics, type Withdrawal as ApiWithdrawal, type WithdrawalStats, type AppSettings, type Verification, type RevenueStats, type RevenueRecord, type CryptoAssetRuntimeStatus } from '@/lib/admin-api';
+import { getLunoPrices, type CryptoPrice } from '@/lib/crypto-price-service';
+import { attachSupportTypingBridge } from '@/lib/support-chat-service';
 
 interface StatCard {
   title: string;
@@ -35,6 +37,7 @@ interface User {
   total_eth_balance?: number;
   total_usdt_balance?: number;
   total_usdc_balance?: number;
+  total_sol_balance?: number;
   total_ngn_balance?: number;
   created_at?: string;
   email_verified?: boolean;
@@ -190,6 +193,7 @@ interface ChatMessage {
   sender: 'user' | 'admin';
   message: string;
   timestamp: string;
+  sender_display_name?: string | null;
   // API fields
   ticket_id?: string;
   user_id?: string;
@@ -263,11 +267,17 @@ export default function AdminDashboard() {
     by_status: { pending: number; completed: number; failed: number };
     by_type: { deposit: number; withdrawal: number; send: number; receive: number; buy: number; sell: number };
     volume: { ngn: number };
+    fee_revenue_ngn?: number;
   } | null>(null);
   const [cryptoSearchTerm, setCryptoSearchTerm] = useState('');
   const [cryptoOverview, setCryptoOverview] = useState<CryptoOverview | null>(null);
   const [cryptoLoading, setCryptoLoading] = useState(false);
   const [cryptoStats, setCryptoStats] = useState<any>(null);
+  const [cryptoMarketPrices, setCryptoMarketPrices] = useState<Record<string, CryptoPrice>>({});
+  const [cryptoAssetRuntimeBySymbol, setCryptoAssetRuntimeBySymbol] = useState<
+    Record<string, CryptoAssetRuntimeStatus>
+  >({});
+  const [cryptoAssetStatusSavingId, setCryptoAssetStatusSavingId] = useState<string | null>(null);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [quickStats, setQuickStats] = useState<QuickStats | null>(null);
   const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
@@ -290,6 +300,11 @@ export default function AdminDashboard() {
   const [selectedChat, setSelectedChat] = useState<string | null>(null);
   const [replyMessage, setReplyMessage] = useState('');
   const [conversationMessages, setConversationMessages] = useState<ChatMessage[]>([]);
+  const [remoteTyping, setRemoteTyping] = useState<{ name: string } | null>(null);
+  const [agentChatDisplayName, setAgentChatDisplayName] = useState('Support');
+  const typingBridgeRef = useRef<ReturnType<typeof attachSupportTypingBridge> | null>(null);
+  const typingDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showUserDetails, setShowUserDetails] = useState(false);
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -388,6 +403,7 @@ export default function AdminDashboard() {
       total_eth_balance: apiUser.total_eth_balance,
       total_usdt_balance: apiUser.total_usdt_balance,
       total_usdc_balance: apiUser.total_usdc_balance,
+      total_sol_balance: apiUser.total_sol_balance,
       total_ngn_balance: apiUser.total_ngn_balance,
       email_verified: apiUser.email_verified,
       pin_setup_completed: apiUser.pin_setup_completed,
@@ -582,13 +598,16 @@ export default function AdminDashboard() {
         const displayTransactions = transactionsArray.map(convertApiTransactionToDisplay);
         setTransactions(displayTransactions);
 
-        // Pull pagination object if present
-        const pagination = ('pagination' in response.data && (response.data as Record<string, unknown>).pagination) || undefined;
-        if (pagination && typeof pagination === 'object' && pagination !== null) {
-          const paginationData = pagination as { total?: number; pages?: number; page?: number };
-          if (paginationData.total) setTransactionsTotal(paginationData.total);
-          if (paginationData.pages) setTransactionsTotalPages(paginationData.pages);
-          if (paginationData.page) setTransactionsPage(paginationData.page);
+        const pagFromData =
+          response.data && typeof response.data === 'object' && 'pagination' in response.data
+            ? (response.data as { pagination?: { total?: number; pages?: number; page?: number } }).pagination
+            : undefined;
+        const pagTop = (response as { pagination?: { total?: number; pages?: number; page?: number } }).pagination;
+        const pagination = pagFromData || pagTop;
+        if (pagination && typeof pagination === 'object') {
+          if (pagination.total != null) setTransactionsTotal(pagination.total);
+          if (pagination.pages != null) setTransactionsTotalPages(Math.max(1, pagination.pages));
+          if (pagination.page != null) setTransactionsPage(pagination.page);
         }
       } else {
         console.error('Failed to fetch transactions:', response.error);
@@ -849,8 +868,12 @@ export default function AdminDashboard() {
     }
   }, [isAuthenticated, activeTab, transactionsPage, transactionFilter, transactionTypeFilter, transactionCurrencyFilter]);
 
-  // Convert crypto overview to display cryptos
-  const convertCryptoOverviewToDisplay = (overview: CryptoOverview): Crypto[] => {
+  // Convert crypto overview + live rates to display rows
+  const convertCryptoOverviewToDisplay = (
+    overview: CryptoOverview,
+    marketPrices: Record<string, CryptoPrice> = {},
+    assetStatusBySymbol: Record<string, CryptoAssetRuntimeStatus> = {}
+  ): Crypto[] => {
     const cryptoList: Crypto[] = [];
     const cryptoConfigs = [
       { symbol: 'BTC', name: 'Bitcoin', logo: '/images/bitcoin.png' },
@@ -859,38 +882,44 @@ export default function AdminDashboard() {
       { symbol: 'USDC', name: 'USD Coin', logo: '/images/usdc.png' },
       { symbol: 'XRP', name: 'Ripple', logo: '/images/ripple.png' },
       { symbol: 'SOL', name: 'Solana', logo: '/images/solana.png' },
+      { symbol: 'TRX', name: 'Tron', logo: '/images/tron.png' },
     ];
 
     cryptoConfigs.forEach((config) => {
       const symbolLower = config.symbol.toLowerCase();
-      const userAllocated = (overview.user_allocated_balances && overview.user_allocated_balances[symbolLower as keyof typeof overview.user_allocated_balances]) || 0;
-      
-      // Prices not available from admin rates (removed)
-      const priceUsd = 0;
-      const priceNgn = 0;
-      const change24h = 0;
-      
-      // Calculate total value
-      const totalValue = userAllocated * priceUsd;
-      
+      const userAllocated = (overview.user_allocated_balances?.[symbolLower as 'btc' | 'eth' | 'usdt' | 'usdc' | 'xrp' | 'trx' | 'sol']) || 0;
+      const quote = marketPrices[config.symbol] || marketPrices[config.symbol.toUpperCase()];
+      const priceUsd = quote?.price_usd ?? 0;
+      const priceNgn = quote?.price_ngn ?? 0;
+      const totalValueNgn = userAllocated * priceNgn;
+      const totalValueUsd = userAllocated * priceUsd;
+
+      const dec = config.symbol === 'BTC' ? 8 : config.symbol === 'ETH' || config.symbol === 'SOL' ? 6 : config.symbol === 'TRX' ? 6 : 2;
+
+      const runtimeStatus = assetStatusBySymbol[config.symbol] ?? 'active';
+
       cryptoList.push({
         id: config.symbol,
         name: config.name,
         symbol: config.symbol,
         logo: config.logo,
-        price: priceUsd > 0 ? `$${priceUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : 'N/A',
-        change24h: `${change24h >= 0 ? '+' : ''}${change24h.toFixed(2)}%`,
-        status: 'Active',
-        marketCap: 'N/A',
-        volume24h: 'N/A',
-        balance: `${userAllocated.toFixed(userAllocated > 0 ? (
-          config.symbol === 'BTC' ? 8 : 
-          config.symbol === 'ETH' ? 6 : 
-          config.symbol === 'SOL' ? 6 :
-          config.symbol === 'XRP' ? 2 :
-          2
-        ) : 0)} ${config.symbol}`,
-        totalValue: totalValue > 0 ? `$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '$0.00',
+        price:
+          priceNgn > 0
+            ? `₦${priceNgn.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : priceUsd > 0
+              ? `$${priceUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : 'N/A',
+        change24h: '—',
+        status: cryptoAssetStatusToDisplay(runtimeStatus),
+        marketCap: '—',
+        volume24h: '—',
+        balance: `${userAllocated.toFixed(userAllocated > 0 ? dec : 0)} ${config.symbol}`,
+        totalValue:
+          totalValueNgn > 0
+            ? `₦${totalValueNgn.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : totalValueUsd > 0
+              ? `$${totalValueUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : '—',
         user_allocated: userAllocated,
         price_usd: priceUsd,
         price_ngn: priceNgn,
@@ -901,27 +930,25 @@ export default function AdminDashboard() {
   };
 
 
-  // Fetch crypto overview
+  // Fetch crypto overview + live market prices (same source as app trading)
   const fetchCryptoOverview = async () => {
     setCryptoLoading(true);
     try {
-      // Fetch prices and overview in parallel
-      await Promise.all([
-        fetchCryptoPrices(),
-        (async () => {
-          const response = await cryptoApi.getCryptoOverview();
-          if (response.success && response.data) {
-            setCryptoOverview(response.data);
-          } else {
-            console.error('Failed to fetch crypto overview:', response.error);
-          }
-        })(),
+      const [overviewRes, priceRes] = await Promise.all([
+        cryptoApi.getCryptoOverview(),
+        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'TRX']),
       ]);
-      
-      // Update display after both are fetched
-      if (cryptoOverview) {
-        const displayCryptos = convertCryptoOverviewToDisplay(cryptoOverview);
-        setCryptos(displayCryptos);
+
+      if (priceRes?.prices && Object.keys(priceRes.prices).length > 0) {
+        setCryptoMarketPrices(priceRes.prices);
+      } else {
+        setCryptoMarketPrices({});
+      }
+
+      if (overviewRes.success && overviewRes.data) {
+        setCryptoOverview(overviewRes.data);
+      } else {
+        console.error('Failed to fetch crypto overview:', overviewRes.error);
       }
     } catch (error: unknown) {
       console.error('Error fetching crypto overview:', error);
@@ -942,21 +969,36 @@ export default function AdminDashboard() {
     }
   };
 
+  const fetchCryptoAssetSettings = async () => {
+    try {
+      const response = await appSettingsApi.getAppSettings();
+      if (response.success && response.data) {
+        setCryptoAssetRuntimeBySymbol(
+          normalizeCryptoAssetStatusMap(response.data.additional_settings ?? null)
+        );
+      }
+    } catch (error: unknown) {
+      console.error('Error fetching crypto asset settings:', error);
+    }
+  };
+
   // Fetch crypto data when crypto tab is active
   useEffect(() => {
     if (isAuthenticated && activeTab === 'crypto') {
       fetchCryptoOverview();
       fetchCryptoStats();
+      fetchCryptoAssetSettings();
     }
   }, [isAuthenticated, activeTab]);
 
-  // Update cryptos display when overview changes
+  // Rebuild crypto table when balances, prices, or app_settings flags change
   useEffect(() => {
     if (cryptoOverview) {
-      const displayCryptos = convertCryptoOverviewToDisplay(cryptoOverview);
-      setCryptos(displayCryptos);
+      setCryptos(
+        convertCryptoOverviewToDisplay(cryptoOverview, cryptoMarketPrices, cryptoAssetRuntimeBySymbol)
+      );
     }
-  }, [cryptoOverview]);
+  }, [cryptoOverview, cryptoMarketPrices, cryptoAssetRuntimeBySymbol]);
 
   // Convert API notification to display notification
   const convertApiNotificationToDisplay = (apiNotification: ApiNotification): Notification => {
@@ -1097,9 +1139,17 @@ export default function AdminDashboard() {
     const earnings = apiCode.total_earnings || 0;
     const formattedEarnings = `₦${earnings.toLocaleString()}`;
 
+    const legacy = apiCode as ApiReferralCode & { user_name?: string; user_email?: string };
+    const referrerLabel =
+      legacy.full_name ||
+      legacy.email ||
+      legacy.user_name ||
+      legacy.user_email ||
+      'Unknown';
+
     return {
       id: apiCode.user_id,
-      referrer: apiCode.full_name || apiCode.email || 'Unknown',
+      referrer: referrerLabel,
       referred: `${apiCode.total_referrals || 0} users`,
       code: apiCode.referral_code,
       status: (apiCode.total_referrals || 0) > 0 ? 'Active' : 'Active',
@@ -1346,11 +1396,11 @@ export default function AdminDashboard() {
   const [pendingEarnings, setPendingEarnings] = useState<number>(0);
 
   // Verification management state
-  const [verifications, setVerifications] = useState<unknown[]>([]);
+  const [verifications, setVerifications] = useState<Verification[]>([]);
   const [verificationLoading, setVerificationLoading] = useState(false);
   const [verificationStatusFilter, setVerificationStatusFilter] = useState('all');
   const [verificationSearchQuery, setVerificationSearchQuery] = useState('');
-  const [selectedVerification, setSelectedVerification] = useState<unknown>(null);
+  const [selectedVerification, setSelectedVerification] = useState<Verification | null>(null);
   const [showVerificationModal, setShowVerificationModal] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [processingVerification, setProcessingVerification] = useState(false);
@@ -1430,6 +1480,7 @@ export default function AdminDashboard() {
       sender: apiMessage.is_admin ? 'admin' : 'user',
       message: apiMessage.message,
       timestamp: timestamp,
+      sender_display_name: (apiMessage as { sender_display_name?: string | null }).sender_display_name ?? null,
       ticket_id: apiMessage.ticket_id,
       user_id: apiMessage.user_id,
       is_admin: apiMessage.is_admin,
@@ -1498,6 +1549,81 @@ export default function AdminDashboard() {
       console.error('Error fetching ticket details:', error);
       // Don't show alert for every error - just log it
     }
+  };
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    (async () => {
+      const { createClient } = await import('@/lib/supabase/client');
+      const supabase = createClient();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user || cancelled) return;
+      const { data: p } = await supabase
+        .from('user_profiles')
+        .select('full_name,email')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
+      if (cancelled) return;
+      const label =
+        (p?.full_name && String(p.full_name).trim()) ||
+        (p?.email && String(p.email).split('@')[0]) ||
+        'Support';
+      setAgentChatDisplayName(label.slice(0, 80));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    typingBridgeRef.current?.cleanup();
+    typingBridgeRef.current = null;
+    setRemoteTyping(null);
+    if (!selectedChat || !isAuthenticated || activeTab !== 'chat') return;
+    const bridge = attachSupportTypingBridge(selectedChat, 'agent', ({ name, active }) => {
+      setRemoteTyping(active ? { name } : null);
+    });
+    typingBridgeRef.current = bridge;
+    return () => {
+      bridge.cleanup();
+      if (typingBridgeRef.current === bridge) typingBridgeRef.current = null;
+      setRemoteTyping(null);
+    };
+  }, [selectedChat, isAuthenticated, activeTab]);
+
+  const flushAgentTypingTimers = () => {
+    if (typingDebounceRef.current) {
+      clearTimeout(typingDebounceRef.current);
+      typingDebounceRef.current = null;
+    }
+    if (typingIdleRef.current) {
+      clearTimeout(typingIdleRef.current);
+      typingIdleRef.current = null;
+    }
+  };
+
+  const handleReplyChange = (value: string) => {
+    setReplyMessage(value);
+    const bridge = typingBridgeRef.current;
+    if (!bridge) return;
+    if (!value.trim()) {
+      flushAgentTypingTimers();
+      void bridge.sendTyping(agentChatDisplayName, 'stop');
+      return;
+    }
+    if (typingDebounceRef.current) clearTimeout(typingDebounceRef.current);
+    typingDebounceRef.current = setTimeout(() => {
+      typingDebounceRef.current = null;
+      void bridge.sendTyping(agentChatDisplayName, 'start');
+      if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
+      typingIdleRef.current = setTimeout(() => {
+        typingIdleRef.current = null;
+        void bridge.sendTyping(agentChatDisplayName, 'stop');
+      }, 2500);
+    }, 400);
   };
 
   // Fetch chat statistics
@@ -1927,8 +2053,10 @@ export default function AdminDashboard() {
         return 'bg-green-100 text-green-800';
       case 'Suspended':
       case 'Failed':
+      case 'Inactive':
         return 'bg-red-100 text-red-800';
       case 'Pending':
+      case 'Maintenance':
         return 'bg-yellow-100 text-yellow-800';
       default:
         return 'bg-gray-100 text-gray-800';
@@ -2198,14 +2326,25 @@ export default function AdminDashboard() {
   };
 
   const handleCryptoAction = async (cryptoId: string, action: string) => {
-    // For now, these are UI-only actions since there's no API endpoint for status changes
-    // In a real implementation, you'd call an API to update crypto status
-    if (action === 'activate') {
-      setCryptos(cryptos.map(c => c.id === cryptoId ? { ...c, status: 'Active' as const } : c));
-    } else if (action === 'deactivate') {
-      setCryptos(cryptos.map(c => c.id === cryptoId ? { ...c, status: 'Inactive' as const } : c));
-    } else if (action === 'maintenance') {
-      setCryptos(cryptos.map(c => c.id === cryptoId ? { ...c, status: 'Maintenance' as const } : c));
+    const sym = cryptoId.toUpperCase();
+    let next: CryptoAssetRuntimeStatus | null = null;
+    if (action === 'activate') next = 'active';
+    else if (action === 'deactivate') next = 'inactive';
+    else if (action === 'maintenance') next = 'maintenance';
+    if (!next) return;
+
+    setCryptoAssetStatusSavingId(sym);
+    try {
+      const response = await appSettingsApi.mergeCryptoAssetStatuses({ [sym]: next });
+      if (response.success && response.data) {
+        setCryptoAssetRuntimeBySymbol(response.data.crypto_asset_status);
+      } else {
+        alert(response.error || 'Failed to update asset status');
+      }
+    } catch (error: unknown) {
+      alert('Error updating asset status: ' + ((error as Error)?.message || 'Unknown error'));
+    } finally {
+      setCryptoAssetStatusSavingId(null);
     }
   };
 
@@ -2731,6 +2870,9 @@ export default function AdminDashboard() {
   const handleSendMessage = async () => {
     if (!selectedChat || !replyMessage.trim()) return;
 
+    flushAgentTypingTimers();
+    void typingBridgeRef.current?.sendTyping(agentChatDisplayName, 'stop');
+
     try {
       const response = await chatSupportApi.sendMessage(selectedChat, replyMessage.trim());
       if (response.success && response.data) {
@@ -3001,6 +3143,14 @@ export default function AdminDashboard() {
             <span className="mr-3">✅</span>
             Verifications
           </button>
+          <Link
+            href="/admin/account-deletions"
+            className="w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors text-gray-700 hover:bg-gray-50 hover:text-purple-600"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <span className="mr-3">🗑️</span>
+            Account deletions
+          </Link>
         </nav>
         <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
           <button
@@ -3190,35 +3340,37 @@ export default function AdminDashboard() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">API Status</span>
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                      (systemHealth as Record<string, unknown>).edge_functions_status === 'healthy' || systemHealth.status === 'healthy'
+                      systemHealth.edge_functions_status === 'healthy' || systemHealth.status === 'healthy'
                         ? 'bg-green-100 text-green-800' 
                         : 'bg-red-100 text-red-800'
                     }`}>
-                      {(systemHealth as Record<string, unknown>).edge_functions_status === 'healthy' || systemHealth.status === 'healthy' ? 'Online' : 'Offline'}
+                      {systemHealth.edge_functions_status === 'healthy' || systemHealth.status === 'healthy' ? 'Online' : 'Offline'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">Database</span>
                     <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                      (systemHealth as Record<string, unknown>).database_status === 'healthy' || systemHealth.status === 'healthy'
+                      systemHealth.database_status === 'healthy' || systemHealth.status === 'healthy'
                         ? 'bg-green-100 text-green-800' 
                         : 'bg-red-100 text-red-800'
                     }`}>
-                      {(systemHealth as Record<string, unknown>).database_status === 'healthy' || systemHealth.status === 'healthy' ? 'Healthy' : 'Unhealthy'}
+                      {systemHealth.database_status === 'healthy' || systemHealth.status === 'healthy' ? 'Healthy' : 'Unhealthy'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">Storage</span>
                     <span className="text-sm font-medium text-gray-900">
-                      {((systemHealth as Record<string, unknown>).storage_used && (systemHealth as Record<string, unknown>).storage_limit) 
-                        ? `${(((systemHealth as Record<string, unknown>).storage_used as number / (systemHealth as Record<string, unknown>).storage_limit as number) * 100).toFixed(1)}% used`
+                      {systemHealth.storage_used != null &&
+                      systemHealth.storage_limit != null &&
+                      systemHealth.storage_limit > 0
+                        ? `${((systemHealth.storage_used / systemHealth.storage_limit) * 100).toFixed(1)}% used`
                         : 'N/A'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">API Calls Today</span>
                     <span className="text-sm font-medium text-gray-900">
-                      {((systemHealth as Record<string, unknown>).api_calls_today as number ?? 0).toLocaleString()}
+                      {(systemHealth.api_calls_today ?? 0).toLocaleString()}
                     </span>
                   </div>
                 </div>
@@ -3255,7 +3407,7 @@ export default function AdminDashboard() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-gray-600">Pending Withdrawals</span>
                     <span className="text-sm font-bold text-yellow-600">
-                      {((quickStats as Record<string, unknown>).pending_withdrawals as number ?? 0).toLocaleString()}
+                      {(quickStats.pending_withdrawals ?? 0).toLocaleString()}
                     </span>
                   </div>
                 </div>
@@ -4346,7 +4498,7 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                     <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
                     <select
                       value={pushNotificationType}
-                      onChange={(e) => setPushNotificationType(e.target.value as 'System' | 'Transaction' | 'Promotion' | 'Alert')}
+                      onChange={(e) => setPushNotificationType(e.target.value as 'System' | 'Transaction' | 'Promotion' | 'Security')}
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent outline-none"
                     >
                       <option value="System">System</option>
@@ -4630,9 +4782,12 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                <div className="text-sm text-gray-600 mb-2">Total Revenue</div>
+                <div className="text-sm text-gray-600 mb-2">Fee revenue (NGN)</div>
                 <div className="text-3xl font-bold text-gray-900">
-                  ₦{transactionStats?.volume.ngn.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                  ₦{(transactionStats?.fee_revenue_ngn ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  NGN volume (completed): ₦{(transactionStats?.volume?.ngn ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -4905,7 +5060,6 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
           </div>
         )}
 
-        {/* Crypto Management Tab */}
         {activeTab === 'crypto' && (
           <div className="space-y-6">
             {/* Total Balance Summary */}
@@ -4920,14 +5074,17 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                <div className="text-sm text-gray-600 mb-2">Total Allocated (Value in Naira)</div>
-                <div className="text-sm font-bold text-gray-900 space-y-1">
-                  {cryptoOverview ? (
-                    <div className="text-gray-400">Price data not available</div>
-                  ) : (
-                    <div className="text-gray-400">Loading...</div>
-                  )}
+                <div className="text-sm text-gray-600 mb-2">Est. user holdings (NGN)</div>
+                <div className="text-2xl font-bold text-gray-900">
+                  {cryptos.length > 0
+                    ? `₦${cryptos
+                        .reduce((sum, c) => sum + (c.user_allocated || 0) * (c.price_ngn || 0), 0)
+                        .toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : cryptoLoading
+                      ? '…'
+                      : '₦0.00'}
                 </div>
+                <div className="text-xs text-gray-500 mt-1">Uses live rates from Alchemy (Prices API)</div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Active Cryptocurrencies</div>
@@ -4976,7 +5133,9 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Crypto</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User Allocated</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User allocated</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rate (NGN)</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Est. value (NGN)</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                       </tr>
@@ -5008,10 +5167,20 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="text-sm font-medium text-gray-900">
                               {(() => {
-                                const decimals = crypto.symbol === 'BTC' ? 8 : crypto.symbol === 'ETH' || crypto.symbol === 'TRX' ? 6 : 2;
+                                const decimals = crypto.symbol === 'BTC' ? 8 : crypto.symbol === 'ETH' || crypto.symbol === 'TRX' || crypto.symbol === 'SOL' ? 6 : 2;
                                 return (crypto.user_allocated || 0).toFixed(decimals);
                               })()} {crypto.symbol}
                             </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                            {(crypto.price_ngn || 0) > 0
+                              ? `₦${(crypto.price_ngn || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '—'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                            {(crypto.user_allocated || 0) * (crypto.price_ngn || 0) > 0
+                              ? `₦${((crypto.user_allocated || 0) * (crypto.price_ngn || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '—'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(crypto.status)}`}>
@@ -5019,26 +5188,33 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                            <div className="flex space-x-2">
-                              {crypto.status === 'Active' ? (
+                            <div className="flex flex-wrap gap-2">
+                              {(crypto.status === 'Active' || crypto.status === 'Maintenance') && (
                                 <>
                                   <button
+                                    type="button"
                                     onClick={() => handleCryptoAction(crypto.id, 'maintenance')}
-                                    className="text-yellow-600 hover:text-yellow-900"
+                                    disabled={cryptoAssetStatusSavingId === crypto.symbol}
+                                    className="text-yellow-600 hover:text-yellow-900 disabled:opacity-40"
                                   >
-                                    Maintenance
+                                    {cryptoAssetStatusSavingId === crypto.symbol ? '…' : 'Maintenance'}
                                   </button>
                                   <button
+                                    type="button"
                                     onClick={() => handleCryptoAction(crypto.id, 'deactivate')}
-                                    className="text-red-600 hover:text-red-900"
+                                    disabled={cryptoAssetStatusSavingId === crypto.symbol}
+                                    className="text-red-600 hover:text-red-900 disabled:opacity-40"
                                   >
                                     Deactivate
                                   </button>
                                 </>
-                              ) : (
+                              )}
+                              {crypto.status !== 'Active' && (
                                 <button
+                                  type="button"
                                   onClick={() => handleCryptoAction(crypto.id, 'activate')}
-                                  className="text-green-600 hover:text-green-900"
+                                  disabled={cryptoAssetStatusSavingId === crypto.symbol}
+                                  className="text-green-600 hover:text-green-900 disabled:opacity-40"
                                 >
                                   Activate
                                 </button>
@@ -5429,7 +5605,7 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {topReferrers.slice(0, 10).map((referrer: { user_id: string; referral_count: number; total_earnings: number; user_profiles?: { full_name?: string; email?: string } }) => (
+                      {topReferrers.slice(0, 10).map((referrer) => (
                         <tr key={referrer.user_id} className="hover:bg-gray-50">
                           <td className="px-4 py-3">
                             <div className="text-sm font-medium text-gray-900">{referrer.name || referrer.email || 'Unknown'}</div>
@@ -5604,7 +5780,7 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                                       const description = prompt('Enter description (optional):') || '';
                                       try {
                                         const response = await referralApi.creditReferralBalance({
-                                          user_id: referral.user_id,
+                                          user_id: referral.user_id as string,
                                           amount: parseFloat(amount),
                                           description,
                                         });
@@ -5647,25 +5823,25 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
               <div className="bg-gradient-purple rounded-xl shadow-sm p-6 text-white">
                 <div className="text-sm opacity-90 mb-2">Total Tickets</div>
                 <div className="text-3xl font-bold">
-                  {chatStatistics?.total.toLocaleString() || chatTicketsTotal.toLocaleString() || '0'}
+                  {(chatStatistics?.total ?? chatTicketsTotal ?? 0).toLocaleString()}
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Open</div>
                 <div className="text-3xl font-bold text-yellow-600">
-                  {chatStatistics?.by_status?.open.toLocaleString() || '0'}
+                  {(chatStatistics?.by_status?.open ?? 0).toLocaleString()}
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">In Progress</div>
                 <div className="text-3xl font-bold text-blue-600">
-                  {chatStatistics?.by_status?.in_progress.toLocaleString() || '0'}
+                  {(chatStatistics?.by_status?.in_progress ?? 0).toLocaleString()}
                 </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Unread Messages</div>
                 <div className="text-3xl font-bold text-red-600">
-                  {chatStatistics?.unread_messages.toLocaleString() || '0'}
+                  {(chatStatistics?.unread_messages ?? 0).toLocaleString()}
                 </div>
               </div>
             </div>
@@ -5804,7 +5980,14 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                     <div className="space-y-4">
                       {conversationMessages
                         .filter(m => m.chatId === selectedChat)
-                        .map((msg) => (
+                        .map((msg) => {
+                          const speakerLabel =
+                            msg.sender === 'admin'
+                              ? (msg.sender_display_name?.trim() || 'Support')
+                              : (msg.sender_display_name?.trim() ||
+                                chatMessages.find(c => c.id === selectedChat)?.user ||
+                                'Customer');
+                          return (
                           <div
                             key={msg.id}
                             className={`flex ${msg.sender === 'admin' ? 'justify-end' : 'justify-start'}`}
@@ -5816,13 +5999,13 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                                   : 'bg-gray-100 text-gray-900'
                               }`}
                             >
+                              <p className="text-xs font-semibold text-gray-600 mb-1">{speakerLabel}</p>
                               <p className="text-sm">{msg.message}</p>
-                              <p className="text-xs mt-1 opacity-70">
-                                {msg.sender === 'admin' ? 'You' : chatMessages.find(c => c.id === selectedChat)?.user} • {msg.timestamp}
-                              </p>
+                              <p className="text-xs mt-1 opacity-70">{msg.timestamp}</p>
                             </div>
                           </div>
-                        ))}
+                        );
+                        })}
                       {conversationMessages.filter(m => m.chatId === selectedChat).length === 0 && (
                         <div className="flex justify-start">
                           <div className="bg-gray-100 rounded-lg p-4 max-w-md">
@@ -5836,13 +6019,16 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                         </div>
                       )}
                     </div>
+                    {remoteTyping && (
+                      <p className="text-sm text-gray-500 mt-2 px-1">{remoteTyping.name} is typing…</p>
+                    )}
                   </div>
                   <div className="p-6 border-t border-gray-200">
                     <div className="flex space-x-2">
                       <input
                         type="text"
                         value={replyMessage}
-                        onChange={(e) => setReplyMessage(e.target.value)}
+                        onChange={(e) => handleReplyChange(e.target.value)}
                         onKeyPress={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
@@ -5877,7 +6063,7 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                             "This has been resolved. Is there anything else I can help with?",
                           ];
                           const randomReply = quickReplies[Math.floor(Math.random() * quickReplies.length)];
-                          setReplyMessage(randomReply);
+                          handleReplyChange(randomReply);
                         }}
                         className="text-purple-600 hover:text-purple-800 underline"
                       >
@@ -6822,23 +7008,58 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="bg-gradient-purple rounded-xl shadow-sm p-6 text-white">
                 <div className="text-sm opacity-90 mb-2">Total Revenue</div>
-                <div className="text-3xl font-bold">₦0.00</div>
+                <div className="text-3xl font-bold">
+                  ₦{(revenueStats?.total_revenue ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
                 <div className="text-xs opacity-75 mt-1">All time</div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Today&apos;s Revenue</div>
-                <div className="text-3xl font-bold text-green-600">₦0.00</div>
-                <div className="text-xs text-gray-500 mt-1">+0% from yesterday</div>
+                <div className="text-3xl font-bold text-green-600">
+                  ₦{(revenueStats?.today_revenue ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {(() => {
+                    const y = revenueStats?.yesterday_revenue ?? 0;
+                    const t = revenueStats?.today_revenue ?? 0;
+                    if (y <= 0 && t <= 0) return '+0% from yesterday';
+                    if (y <= 0) return '+100% vs yesterday';
+                    const pct = ((t - y) / y) * 100;
+                    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs yesterday`;
+                  })()}
+                </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">This Month</div>
-                <div className="text-3xl font-bold text-gray-900">₦0.00</div>
-                <div className="text-xs text-gray-500 mt-1">+0% from last month</div>
+                <div className="text-3xl font-bold text-gray-900">
+                  ₦{(revenueStats?.month_revenue ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {(() => {
+                    const lm = revenueStats?.last_month_revenue ?? 0;
+                    const m = revenueStats?.month_revenue ?? 0;
+                    if (lm <= 0 && m <= 0) return '+0% vs same period last month';
+                    if (lm <= 0) return '+100% vs last month';
+                    const pct = ((m - lm) / lm) * 100;
+                    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs last month`;
+                  })()}
+                </div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">This Year</div>
-                <div className="text-3xl font-bold text-gray-900">₦0.00</div>
-                <div className="text-xs text-gray-500 mt-1">+0% from last year</div>
+                <div className="text-3xl font-bold text-gray-900">
+                  ₦{(revenueStats?.year_revenue ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {(() => {
+                    const ly = revenueStats?.last_year_revenue ?? 0;
+                    const y = revenueStats?.year_revenue ?? 0;
+                    if (ly <= 0 && y <= 0) return '+0% vs last year';
+                    if (ly <= 0) return '+100% vs last year';
+                    const pct = ((y - ly) / ly) * 100;
+                    return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs last year`;
+                  })()}
+                </div>
               </div>
             </div>
 
@@ -7216,17 +7437,17 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="bg-gradient-purple rounded-xl shadow-sm p-6 text-white">
                 <div className="text-sm opacity-90 mb-2">Pending Verifications</div>
-                <div className="text-3xl font-bold">{verifications.filter((v: any) => v.status === 'pending').length}</div>
+                <div className="text-3xl font-bold">{verifications.filter((v) => v.status === 'pending').length}</div>
                 <div className="text-xs opacity-75 mt-1">Awaiting review</div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Approved</div>
-                <div className="text-3xl font-bold text-green-600">{verifications.filter((v: any) => v.status === 'approved').length}</div>
+                <div className="text-3xl font-bold text-green-600">{verifications.filter((v) => v.status === 'approved').length}</div>
                 <div className="text-xs text-gray-500 mt-1">Verified accounts</div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="text-sm text-gray-600 mb-2">Rejected</div>
-                <div className="text-3xl font-bold text-red-600">{verifications.filter((v: any) => v.status === 'rejected').length}</div>
+                <div className="text-3xl font-bold text-red-600">{verifications.filter((v) => v.status === 'rejected').length}</div>
                 <div className="text-xs text-gray-500 mt-1">Failed verification</div>
               </div>
               <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -7487,7 +7708,10 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                           src={selectedVerification.nin_front_url}
                           alt="NIN Front"
                           className="w-full h-64 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
-                          onClick={() => window.open(selectedVerification.nin_front_url, '_blank')}
+                          onClick={() => {
+                            const url = selectedVerification.nin_front_url;
+                            if (url) window.open(url, '_blank');
+                          }}
                         />
                       ) : (
                         <div className="w-full h-64 bg-gray-100 rounded flex items-center justify-center">
@@ -7502,7 +7726,10 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                           src={selectedVerification.nin_back_url}
                           alt="NIN Back"
                           className="w-full h-64 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
-                          onClick={() => window.open(selectedVerification.nin_back_url, '_blank')}
+                          onClick={() => {
+                            const url = selectedVerification.nin_back_url;
+                            if (url) window.open(url, '_blank');
+                          }}
                         />
                       ) : (
                         <div className="w-full h-64 bg-gray-100 rounded flex items-center justify-center">
@@ -7517,7 +7744,10 @@ ${selectedTransaction.description ? `Description: ${selectedTransaction.descript
                           src={selectedVerification.passport_photo_url}
                           alt="Passport Photo"
                           className="w-full h-64 object-cover rounded border border-gray-200 cursor-pointer hover:opacity-90 transition-opacity"
-                          onClick={() => window.open(selectedVerification.passport_photo_url, '_blank')}
+                          onClick={() => {
+                            const url = selectedVerification.passport_photo_url;
+                            if (url) window.open(url, '_blank');
+                          }}
                         />
                       ) : (
                         <div className="w-full h-64 bg-gray-100 rounded flex items-center justify-center">

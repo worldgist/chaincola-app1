@@ -16,14 +16,15 @@ import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/lib/admin-service';
 import { supabase } from '@/lib/supabase';
 import Constants from 'expo-constants';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
 
-const SUPABASE_URL = Constants.expoConfig?.extra?.supabaseUrl || 
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
                      process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                     'https://slleojsdpctxhlsoyenr.supabase.co';
+                     SUPABASE_URL;
 
-const ZENDIT_BALANCE_URL = `${SUPABASE_URL}/functions/v1/get-zendit-balance`;
-const ZENDIT_PURCHASES_URL = `${SUPABASE_URL}/functions/v1/get-zendit-voucher-purchases`;
+const ZENDIT_BALANCE_URL = `${supabaseUrl}/functions/v1/get-zendit-balance`;
+const ZENDIT_PURCHASES_URL = `${supabaseUrl}/functions/v1/get-zendit-voucher-purchases`;
 
 interface ZenditBalance {
   availableBalance: number;
@@ -106,7 +107,7 @@ export default function ZenditManagementScreen() {
       const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                              process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                              process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                             'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                             SUPABASE_ANON_KEY;
 
       const response = await fetch(ZENDIT_BALANCE_URL, {
         method: 'GET',
@@ -148,7 +149,7 @@ export default function ZenditManagementScreen() {
       const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
                              process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
                              process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                             'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbGVvanNkcGN0eGhsc295ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYxNjU5OTEsImV4cCI6MjA4MTc0MTk5MX0.itqrU9VqzNKPSodPGJtMs5ViQU8gDUQ05bvmvlKkfRw';
+                             SUPABASE_ANON_KEY;
 
       const offset = (page - 1) * limit;
       let url = `${ZENDIT_PURCHASES_URL}?_limit=${limit}&_offset=${offset}`;

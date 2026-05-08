@@ -1,5 +1,20 @@
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
+
+function getSupabaseConfig() {
+  const supabaseUrl =
+    Constants.expoConfig?.extra?.supabaseUrl ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.EXPO_PUBLIC_SUPABASE_URL ||
+    SUPABASE_URL;
+  const supabaseAnonKey =
+    Constants.expoConfig?.extra?.supabaseAnonKey ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+    SUPABASE_ANON_KEY;
+  return { supabaseUrl, supabaseAnonKey };
+}
 
 export interface SystemWallet {
   id: number;
@@ -89,14 +104,7 @@ export async function getSystemWallet(): Promise<{ data?: SystemWallet; error?: 
       return { error: 'Not authenticated' };
     }
 
-    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
-                       process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                       process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
-
-    const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
-                           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const { supabaseUrl, supabaseAnonKey } = getSupabaseConfig();
 
     const response = await fetch(`${supabaseUrl}/functions/v1/admin-treasury`, {
       method: 'POST',
@@ -174,14 +182,7 @@ export async function getTreasuryStats(): Promise<{ data?: TreasuryStats; error?
       return { error: 'Not authenticated' };
     }
 
-    const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
-                       process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                       process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                       'https://slleojsdpctxhlsoyenr.supabase.co';
-
-    const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey || 
-                           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    const { supabaseUrl, supabaseAnonKey } = getSupabaseConfig();
 
     const response = await fetch(`${supabaseUrl}/functions/v1/admin-treasury`, {
       method: 'POST',

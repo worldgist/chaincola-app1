@@ -83,8 +83,9 @@ serve(async (req) => {
       }
     }
 
-    // Get email service configuration
-    const emailService = Deno.env.get('EMAIL_SERVICE') || 'resend'; // resend, sendgrid, or supabase
+    // Email providers: Resend is preferred whenever RESEND_API_KEY is set (matches product default).
+    // Use SendGrid only when EMAIL_SERVICE=sendgrid and SENDGRID_API_KEY is set (and no Resend key).
+    const emailService = (Deno.env.get('EMAIL_SERVICE') || 'resend').toLowerCase();
     const resendApiKey = Deno.env.get('RESEND_API_KEY');
     const sendgridApiKey = Deno.env.get('SENDGRID_API_KEY');
     const fromEmail = Deno.env.get('FROM_EMAIL') || 'noreply@chaincola.com';
@@ -93,8 +94,11 @@ serve(async (req) => {
     let emailSent = false;
     let error: string | null = null;
 
-    // Send email using Resend (recommended)
-    if (emailService === 'resend' && resendApiKey) {
+    const useSendgridOnly =
+      emailService === 'sendgrid' && !!sendgridApiKey && !resendApiKey;
+
+    // Send email using Resend (used whenever API key is configured)
+    if (resendApiKey && !useSendgridOnly) {
       try {
         // Prepare attachments for Resend API
         const resendAttachments = attachments.map(att => ({
@@ -137,7 +141,7 @@ serve(async (req) => {
         error = err.message || 'Failed to send email via Resend';
       }
     }
-    // Send email using SendGrid
+    // Send email using SendGrid (when Resend is not configured or explicitly SendGrid-only)
     else if (emailService === 'sendgrid' && sendgridApiKey) {
       try {
         // Prepare attachments for SendGrid API
@@ -208,7 +212,8 @@ serve(async (req) => {
       }
     }
     else {
-      error = `Email service "${emailService}" not configured. Please set RESEND_API_KEY or SENDGRID_API_KEY environment variable.`;
+      error =
+        'No email provider configured. Set RESEND_API_KEY (recommended) or SENDGRID_API_KEY with EMAIL_SERVICE=sendgrid.';
       console.error('❌', error);
     }
 
