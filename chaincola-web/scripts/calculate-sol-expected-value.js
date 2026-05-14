@@ -76,20 +76,22 @@ async function calculateSolExpectedValue() {
     let solPriceNGN = null;
     let priceSource = 'unknown';
 
-    // Try pricing engine config
-    const { data: pricingConfig } = await supabase
-      .from('pricing_engine_config')
-      .select('buy_price, sell_price')
-      .eq('asset', 'SOL')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    const { data: cpRow } = await supabase
+      .from('crypto_prices')
+      .select('price_ngn, bid, ask')
+      .eq('crypto_symbol', 'SOL')
+      .maybeSingle();
 
-    if (pricingConfig) {
-      solPriceNGN = (parseFloat(pricingConfig.buy_price) + parseFloat(pricingConfig.sell_price)) / 2;
-      priceSource = 'pricing engine';
-    } else {
+    if (cpRow) {
+      const bid = parseFloat(cpRow.bid || 0);
+      const ask = parseFloat(cpRow.ask || 0);
+      const mid = parseFloat(cpRow.price_ngn || 0);
+      if (bid > 0 && ask > 0) solPriceNGN = (bid + ask) / 2;
+      else if (mid > 0) solPriceNGN = mid;
+      if (solPriceNGN) priceSource = 'crypto_prices';
+    }
+
+    if (!solPriceNGN) {
       // Try get-solana-price function
       try {
         const functionUrl = `${supabaseUrl}/functions/v1/get-solana-price`;

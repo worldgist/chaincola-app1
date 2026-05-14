@@ -36,7 +36,7 @@ const STATIC_BUY_RATES_NGN: Record<string, number> = {
   'SOL': 250_000,
 };
 
-/** Minimum plausible NGN per 1 coin. Values below this are treated as misconfigured pricing_engine rows. */
+/** Minimum plausible NGN per 1 coin. Values below this are treated as misconfigured static rates. */
 const MIN_SANE_BUY_RATE_NGN: Record<string, number> = {
   'BTC': 5_000_000,
   'ETH': 200_000,
@@ -135,44 +135,9 @@ serve(async (req) => {
       }
     }
 
-    // Get pricing engine configuration
-    let pricingConfig: any = null;
-    try {
-      const { data: configData, error: configError } = await supabase.rpc('get_pricing_engine_config', {
-        p_asset: assetUpper,
-      });
-      
-      if (!configError && configData && configData.length > 0) {
-        pricingConfig = configData[0];
-        
-        // Check if trading is enabled
-        if (!pricingConfig.trading_enabled) {
-          return new Response(
-            JSON.stringify({ 
-              success: false, 
-              error: `Trading is currently disabled for ${assetUpper}` 
-            }),
-            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-      }
-    } catch (err) {
-      console.warn('⚠️ Error fetching pricing engine config:', err);
-    }
-
-    // Use static NGN rate only (no market/Luno API)
-    // Priority: admin override_buy_price_ngn > frozen_buy_price_ngn > static fallback
-    let rate: number = 0;
-    if (pricingConfig?.override_buy_price_ngn) {
-      rate = parseFloat(pricingConfig.override_buy_price_ngn.toString());
-      console.log(`📊 Using admin override buy price for ${assetUpper}: ₦${rate}`);
-    } else if (pricingConfig?.price_frozen && pricingConfig.frozen_buy_price_ngn) {
-      rate = parseFloat(pricingConfig.frozen_buy_price_ngn.toString());
-      console.log(`📊 Using admin frozen buy price for ${assetUpper}: ₦${rate}`);
-    } else {
-      rate = STATIC_BUY_RATES_NGN[assetUpper] || 0;
-      console.log(`📊 Using static buy price for ${assetUpper}: ₦${rate}`);
-    }
+    // Static NGN buy rate per unit (no admin pricing table)
+    let rate: number = STATIC_BUY_RATES_NGN[assetUpper] || 0;
+    console.log(`📊 Using static buy price for ${assetUpper}: ₦${rate}`);
 
     if (!rate || rate <= 0) {
       return new Response(
@@ -213,6 +178,27 @@ serve(async (req) => {
       console.warn('⚠️ Could not fetch app_settings fee, using default 1%');
     }
 
+    // Soft pre-check (RPC still locks rows and is authoritative).
+    const [{ data: uwPre }, { data: wbPre }] = await Promise.all([
+      supabase.from('user_wallets').select('ngn_balance').eq('user_id', user.id).maybeSingle(),
+      supabase.from('wallet_balances').select('balance, locked').eq('user_id', user.id).eq('currency', 'NGN').maybeSingle(),
+    ]);
+    const grossPre = Math.max(
+      Number(uwPre?.ngn_balance ?? 0),
+      Number(wbPre?.balance ?? 0),
+    );
+    const lockedPre = Number(wbPre?.locked ?? 0);
+    const availPre = grossPre - lockedPre;
+    if (availPre + 1e-9 < ngnAmount) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `Insufficient available NGN. You have ₦${availPre.toFixed(2)} available (₦${grossPre.toFixed(2)} gross − ₦${lockedPre.toFixed(2)} locked). Required: ₦${ngnAmount.toFixed(2)}.`,
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     // Call instant buy function
     const { data: buyResult, error: buyError } = await supabase.rpc('instant_buy_crypto', {
       p_user_id: user.id,
@@ -247,7 +233,7 @@ serve(async (req) => {
       let err = result.error_message || 'Buy failed';
       if (typeof err === 'string' && err.includes('Insufficient system inventory')) {
         err =
-          `${err} Instant buy uses treasury inventory. Ask an admin to credit system_wallets for this asset or fix pricing in Admin → Pricing.`;
+          `${err} Instant buy uses treasury inventory. Ask an admin to credit system_wallets for this asset or check market price feeds.`;
       }
       return new Response(
         JSON.stringify({ 
@@ -281,7 +267,7 @@ serve(async (req) => {
       // Don't fail the whole operation if notification fails
     }
 
-    // Return success response
+    // Return success response (ledger: available NGN checked, reserved, debited; crypto from system inventory; balances synced)
     return new Response(
       JSON.stringify({
         success: true,
@@ -291,6 +277,24 @@ serve(async (req) => {
         fee_percentage: feePercentage,
         balances: result.new_balances,
         transaction_id: transactionId,
+        instant_settlement: {
+          ngn_debited_immediately: true,
+          crypto_credited_immediately: true,
+          system_inventory_debited_immediately: true,
+          user_balances_updated_immediately: true,
+          ledger_steps: [
+            'row_lock_user_wallets',
+            'row_lock_system_wallets',
+            'row_lock_wallet_balances_ngn',
+            'compute_available_ngn_gross_minus_locked',
+            'reserve_ngn_debit_on_wallet_balances_locked',
+            'debit_user_ngn_credit_user_crypto',
+            'debit_system_crypto_inventory_credit_system_ngn_float',
+            'release_wallet_balances_ngn_reserve',
+            'sync_wallet_balances_and_wallets_table',
+          ],
+          atomic_single_transaction: true,
+        },
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

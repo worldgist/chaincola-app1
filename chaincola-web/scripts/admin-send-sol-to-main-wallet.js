@@ -92,7 +92,7 @@ async function sendSolToMainWallet(userId, amount, reason) {
     console.log('   2. Or use the admin UI in Treasury Management');
     console.log('   3. Or manually transfer using a Solana wallet\n');
 
-    // Alternative: Use the admin-treasury function if it supports this
+    // Alternative: call Supabase RPC or admin tooling if you add a replacement.
     console.log('💡 Alternative: Use Admin Panel → Treasury → Adjust Liquidity');
     console.log('   This allows you to manually adjust the inventory after transfer.\n');
 

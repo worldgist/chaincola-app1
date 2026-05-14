@@ -4,3 +4,55 @@
 
 [functions.flutterwave-webhook]
 verify_jwt = false
+
+# Public market data (same pattern as get-token-prices).
+[functions.alchemy-crypto-details]
+verify_jwt = false
+
+# Luno public tickers (NGN pairs) + Alchemy SOL fallback — no secrets required for Luno.
+[functions.get-luno-ngn-quotes]
+verify_jwt = false
+
+# Luno funding addresses — validates JWT inside the function (avoids gateway JWT edge cases with invoke).
+[functions.admin-luno-funding-addresses]
+verify_jwt = false
+
+# ---------------------------------------------------------------------------
+# Auth — keep these explicit so `supabase config push` does NOT replace hosted
+# Auth with local Docker defaults (which disabled confirmations and MFA).
+# Adjust site_url / additional_redirect_urls to match Dashboard → URL configuration.
+# ---------------------------------------------------------------------------
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = []
+
+[auth.mfa]
+max_enrolled_factors = 10
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[auth.mfa.phone]
+enroll_enabled = false
+verify_enabled = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = true
+secure_password_change = false
+max_frequency = "1m0s"
+otp_length = 6
+otp_expiry = 3600
+
+# GoTrue merges these only when Send Email hook is OFF. Use {{ .Token }}, {{ .ConfirmationURL }}, {{ .Email }}, {{ .SiteURL }}.
+# If Auth → Hooks → Send Email is ON, these files are ignored; the hook must send email_data.token (see Supabase Send Email Hook docs).
+[auth.email.template.confirmation]
+subject = "Confirm your ChainCola signup"
+content_path = "./supabase/templates/auth_confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your ChainCola password"
+content_path = "./supabase/templates/auth_recovery.html"

@@ -71,7 +71,7 @@ export default function CryptoSelectModal({
       
       const [balancesResult, pricesResult] = await Promise.all([
         getUserCryptoBalances(user.id),
-        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL']),
+        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'], { retailOverlay: false }),
       ]);
 
       const assets: CryptoAsset[] = cryptoAssetsConfig.map((config) => {
@@ -102,7 +102,7 @@ export default function CryptoSelectModal({
 
   const fetchPrices = async () => {
     try {
-      const pricesResult = await getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC']);
+      const pricesResult = await getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC'], { retailOverlay: false });
       
       setCryptoAssets((prev) =>
         prev.map((asset) => {

@@ -14,13 +14,30 @@ export function getAlchemyApiKey(): string {
   ).trim();
 }
 
+/** Reject junk FX (e.g. 1.0) that would make USDT price_ngn = ₦1.00 */
+const MIN_USD_NGN = 400;
+const MAX_USD_NGN = 5000;
+
 export async function getUsdToNgnRate(): Promise<number> {
   try {
     const res = await fetch("https://api.exchangerate-api.com/v4/latest/USD");
     if (res.ok) {
       const data = await res.json();
-      if (typeof data.rates?.NGN === "number" && data.rates.NGN > 0) {
-        return data.rates.NGN;
+      const ngn = typeof data.rates?.NGN === "number" ? data.rates.NGN : NaN;
+      if (Number.isFinite(ngn) && ngn >= MIN_USD_NGN && ngn <= MAX_USD_NGN) {
+        return ngn;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=NGN");
+    if (res.ok) {
+      const data = await res.json();
+      const ngn = typeof data.rates?.NGN === "number" ? data.rates.NGN : NaN;
+      if (Number.isFinite(ngn) && ngn >= MIN_USD_NGN && ngn <= MAX_USD_NGN) {
+        return ngn;
       }
     }
   } catch {
@@ -78,4 +95,25 @@ export async function fetchAlchemyUsdPricesBySymbols(
 export async function fetchAlchemyUsdForSymbol(symbolUpper: string): Promise<number> {
   const m = await fetchAlchemyUsdPricesBySymbols([symbolUpper]);
   return m.get(symbolUpper.toUpperCase())?.usd ?? 0;
+}
+
+/**
+ * SOL spot in ~USD from Binance public API (no key). USDT tracks USD closely for display pricing.
+ */
+export async function fetchSolUsdFromBinanceSpot(): Promise<
+  { usd: number; lastUpdatedAt?: string } | null
+> {
+  try {
+    const res = await fetch(
+      "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
+      { headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return null;
+    const j = (await res.json()) as { price?: string };
+    const p = parseFloat(String(j.price ?? ""));
+    if (!Number.isFinite(p) || p <= 0 || p > 1_000_000) return null;
+    return { usd: p, lastUpdatedAt: new Date().toISOString() };
+  } catch {
+    return null;
+  }
 }

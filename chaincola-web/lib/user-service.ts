@@ -74,7 +74,7 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
       if (!hasErrorProperties && errorKeys.length > 0) {
         errorKeys.forEach(key => {
           try {
-            const val = (error as Record<string, unknown>)[key];
+            const val = (error as unknown as Record<string, unknown>)[key];
             if (val !== undefined) errorDetails[key] = val;
           } catch {
             // Skip non-serializable properties

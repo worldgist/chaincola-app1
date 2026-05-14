@@ -52,9 +52,21 @@ export interface Transaction {
   [key: string]: any;
 }
 
+export type CryptoDepositMonitorBucket = 'incoming' | 'delivered' | 'failed';
+
+/** Maps `transactions.status` to admin deposit monitor lanes (incoming = not finalized). */
+export function mapTransactionStatusToDepositMonitor(raw: string | null | undefined): CryptoDepositMonitorBucket {
+  const s = (raw || '').toUpperCase();
+  if (['CONFIRMED', 'COMPLETED', 'SUCCESS'].includes(s)) return 'delivered';
+  if (['FAILED', 'CANCELLED', 'REJECTED', 'ERROR'].includes(s)) return 'failed';
+  return 'incoming';
+}
+
 export interface CryptoOverview {
   total_users: number;
   users_with_balance?: number;
+  /** Users with balance in any of BTC, ETH, USDT, USDC, XRP, SOL (excludes TRX-only holders). */
+  users_with_listed_crypto_balance?: number;
   total_balance: number;
   by_currency: Record<string, number>;
   user_allocated_balances?: {
@@ -66,6 +78,8 @@ export interface CryptoOverview {
     trx?: number;
     sol?: number;
   };
+  /** Sum of `wallets.ngn_balance` for all users (admin-visible rows). */
+  total_user_ngn_balance?: number;
 }
 
 export interface DashboardStats {
@@ -309,6 +323,38 @@ export function cryptoAssetStatusToDisplay(
   }
 }
 
+/** Stored under `app_settings.additional_settings.admin_crypto_price_overrides_ngn` */
+export type AdminCryptoPriceOverrideRow = { buy_ngn: number; sell_ngn: number };
+
+const ADMIN_CRYPTO_PRICE_OVERRIDES_KEY = 'admin_crypto_price_overrides_ngn';
+
+const ADMIN_LIST_PRICE_SYMBOLS = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'] as const;
+
+/** Parse admin-published NGN buy/sell list prices (per 1 coin). Missing symbols mean "use live market". */
+export function parseAdminCryptoPriceOverrides(
+  additional_settings: unknown
+): Partial<Record<string, AdminCryptoPriceOverrideRow>> {
+  const nested =
+    additional_settings &&
+    typeof additional_settings === 'object' &&
+    ADMIN_CRYPTO_PRICE_OVERRIDES_KEY in additional_settings
+      ? (additional_settings as Record<string, unknown>)[ADMIN_CRYPTO_PRICE_OVERRIDES_KEY]
+      : undefined;
+  const out: Partial<Record<string, AdminCryptoPriceOverrideRow>> = {};
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return out;
+  for (const [k, v] of Object.entries(nested as Record<string, unknown>)) {
+    const sym = k.toUpperCase();
+    if (!(ADMIN_LIST_PRICE_SYMBOLS as readonly string[]).includes(sym)) continue;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+    const o = v as Record<string, unknown>;
+    const buy = Number(o.buy_ngn ?? o.buy);
+    const sell = Number(o.sell_ngn ?? o.sell);
+    if (!Number.isFinite(buy) || !Number.isFinite(sell) || buy <= 0 || sell <= 0) continue;
+    out[sym] = { buy_ngn: buy, sell_ngn: sell };
+  }
+  return out;
+}
+
 // API Response Types
 export interface Pagination {
   page: number;
@@ -426,7 +472,7 @@ async function callAdminFunction<T = unknown>(action: string, body?: unknown): P
 export const adminApi = {
   getUsers: async (params?: { page?: number; limit?: number; search?: string; status?: string; sort_by?: string; sort_order?: string }): Promise<ApiResponse<PaginatedUsersResponse>> => {
     try {
-      const result = await callAdminFunction('getUsers', {
+      const result = await callAdminFunction<PaginatedUsersResponse>('getUsers', {
         page: params?.page || 1,
         limit: params?.limit || 20,
         search: params?.search,
@@ -456,7 +502,6 @@ export const adminApi = {
       console.error('Error fetching users:', error);
       return {
         success: false,
-        data: [],
         error: error.message || 'Failed to fetch users',
       };
     }
@@ -464,7 +509,7 @@ export const adminApi = {
 
   getUserDetails: async (userId: string): Promise<ApiResponse<User>> => {
     try {
-      const result = await callAdminFunction('getUserDetails', { userId });
+      const result = await callAdminFunction<User>('getUserDetails', { userId });
 
       if (result.success && result.data) {
         return {
@@ -605,11 +650,15 @@ export const transactionsApi = {
     date_from?: string;
     date_to?: string;
     status_filter?: string;
+    /** If set, restricts to these DB status values (uppercase). Takes precedence over status_filter when non-empty. */
+    status_in?: string[];
     transaction_type?: string;
     currency_filter?: string;
     search_query?: string;
     sort_by?: string;
     sort_order?: 'asc' | 'desc';
+    /** When true, only on-chain crypto receipts (excludes fiat-style rows). */
+    crypto_receive_only?: boolean;
   }): Promise<PaginatedResponse<Transaction>> => {
     try {
       const supabase = createClient();
@@ -657,11 +706,16 @@ export const transactionsApi = {
         query = query.eq('user_id', params.user_id);
       }
 
-      if (params?.status_filter) {
+      if (params?.status_in && params.status_in.length > 0) {
+        const normalized = params.status_in.map((s) => s.toUpperCase().trim()).filter(Boolean);
+        query = query.in('status', normalized);
+      } else if (params?.status_filter) {
         query = query.eq('status', params.status_filter.toUpperCase());
       }
 
-      if (params?.transaction_type) {
+      if (params?.crypto_receive_only) {
+        query = query.eq('transaction_type', 'RECEIVE').not('crypto_currency', 'in', '(NGN,USD,FIAT)');
+      } else if (params?.transaction_type) {
         query = query.eq('transaction_type', params.transaction_type.toUpperCase());
       }
 
@@ -794,6 +848,10 @@ export const transactionsApi = {
           from_address: tx.from_address,
           to_address: tx.to_address,
           metadata: tx.metadata,
+          confirmations: tx.confirmations,
+          block_number: tx.block_number,
+          network: tx.network,
+          error_message: tx.error_message,
         };
       });
 
@@ -854,6 +912,54 @@ export const transactionsApi = {
         },
         error: errorMessage,
       };
+    }
+  },
+
+  getCryptoDepositMonitorStats: async (): Promise<
+    ApiResponse<{
+      incoming: number;
+      delivered: number;
+      failed: number;
+      total: number;
+    }>
+  > => {
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const base = () =>
+        supabase
+          .from('transactions')
+          .select('*', { count: 'exact', head: true })
+          .eq('transaction_type', 'RECEIVE')
+          .not('crypto_currency', 'in', '(NGN,USD,FIAT)');
+      const [incomingRes, deliveredRes, failedRes, totalRes] = await Promise.all([
+        base().in('status', ['PENDING', 'CONFIRMING', 'PROCESSING']),
+        base().in('status', ['CONFIRMED', 'COMPLETED', 'SUCCESS']),
+        base().in('status', ['FAILED', 'CANCELLED', 'REJECTED', 'ERROR']),
+        base(),
+      ]);
+      const pick = (n: number | null | undefined) => (typeof n === 'number' && Number.isFinite(n) ? n : 0);
+      if (incomingRes.error) console.warn('getCryptoDepositMonitorStats incoming:', incomingRes.error);
+      if (deliveredRes.error) console.warn('getCryptoDepositMonitorStats delivered:', deliveredRes.error);
+      if (failedRes.error) console.warn('getCryptoDepositMonitorStats failed:', failedRes.error);
+      if (totalRes.error) console.warn('getCryptoDepositMonitorStats total:', totalRes.error);
+      return {
+        success: true,
+        data: {
+          incoming: pick(incomingRes.count),
+          delivered: pick(deliveredRes.count),
+          failed: pick(failedRes.count),
+          total: pick(totalRes.count),
+        },
+      };
+    } catch (error: unknown) {
+      const err = error as Error;
+      return { success: false, error: err?.message || 'Failed to load deposit stats' };
     }
   },
 
@@ -1059,7 +1165,7 @@ export const transactionsApi = {
       }
 
       // Log admin action for audit
-      await supabase.from('admin_action_logs').insert({
+      const { error: auditLogError } = await supabase.from('admin_action_logs').insert({
         admin_user_id: session.user.id,
         target_user_id: transaction.user_id,
         action_type: 'transaction_status_update',
@@ -1069,7 +1175,10 @@ export const transactionsApi = {
           new_status: status.toUpperCase(),
           reason: reason || undefined,
         },
-      }).catch((err) => console.error('Failed to log admin action:', err));
+      });
+      if (auditLogError) {
+        console.error('Failed to log admin action:', auditLogError);
+      }
 
       // If completing a DEPOSIT transaction, credit the wallet
       if (status === 'completed' && transaction.transaction_type === 'DEPOSIT' && transaction.fiat_amount) {
@@ -1292,11 +1401,21 @@ export const transactionsApi = {
         }, {});
       }
 
-      const enrichedLogs = (logs || []).map((log: { admin_user_id: string; target_user_id: string; [key: string]: unknown }) => ({
+      type AuditLogEntry = {
+        id: string;
+        admin_user_id: string;
+        admin_email?: string;
+        target_user_id: string;
+        target_email?: string;
+        action_type: string;
+        action_details: Record<string, unknown>;
+        created_at: string;
+      };
+      const enrichedLogs = (logs || []).map((log) => ({
         ...log,
         admin_email: profileMap[log.admin_user_id],
         target_email: profileMap[log.target_user_id],
-      }));
+      })) as AuditLogEntry[];
 
       const total = totalCount ?? (logs?.length ?? 0);
 
@@ -1355,6 +1474,8 @@ export const cryptoApi = {
         sol?: number;
       } = {};
       const usersWithBalance = new Set<string>();
+      const LISTED_SIX = new Set(['btc', 'eth', 'usdt', 'usdc', 'xrp', 'sol']);
+      const usersWithListedCryptoBalance = new Set<string>();
 
       if (!walletBalancesError && walletBalances) {
         walletBalances.forEach((wb: any) => {
@@ -1369,6 +1490,9 @@ export const cryptoApi = {
             // Track users with balance
             if (wb.user_id) {
               usersWithBalance.add(wb.user_id);
+              if (LISTED_SIX.has(currencyLower)) {
+                usersWithListedCryptoBalance.add(wb.user_id);
+              }
             }
 
             // Map to user_allocated_balances structure
@@ -1391,14 +1515,36 @@ export const cryptoApi = {
         });
       }
 
+      let totalUserNgnBalance = 0;
+      const ngnPageSize = 1000;
+      let ngnOffset = 0;
+      for (;;) {
+        const { data: ngnRows, error: ngnErr } = await supabase
+          .from('wallets')
+          .select('ngn_balance')
+          .range(ngnOffset, ngnOffset + ngnPageSize - 1);
+        if (ngnErr) {
+          console.warn('getCryptoOverview: wallets NGN sum', ngnErr);
+          break;
+        }
+        if (!ngnRows?.length) break;
+        for (const row of ngnRows) {
+          totalUserNgnBalance += parseFloat(String((row as { ngn_balance?: unknown }).ngn_balance ?? 0)) || 0;
+        }
+        if (ngnRows.length < ngnPageSize) break;
+        ngnOffset += ngnPageSize;
+      }
+
       return {
         success: true,
         data: {
           total_users: totalUsers || 0,
           users_with_balance: usersWithBalance.size,
+          users_with_listed_crypto_balance: usersWithListedCryptoBalance.size,
           total_balance: totalBalance,
           by_currency: byCurrency,
           user_allocated_balances: userAllocatedBalances,
+          total_user_ngn_balance: totalUserNgnBalance,
         },
       };
     } catch (error: any) {
@@ -1761,9 +1907,16 @@ export const dashboardApi = {
       });
 
       if (result.success && result.data) {
+        const txs = Array.isArray(result.data)
+          ? result.data
+          : Array.isArray((result.data as any).transactions)
+            ? ((result.data as any).transactions as Transaction[])
+            : Array.isArray((result.data as any).items)
+              ? ((result.data as any).items as Transaction[])
+              : [];
         return {
           success: true,
-          data: result.data.transactions || [],
+          data: txs,
         };
       }
 
@@ -3731,6 +3884,102 @@ export const appSettingsApi = {
       };
     }
   },
+
+  /**
+   * Persists list buy/sell (NGN per 1 coin) under
+   * `app_settings.additional_settings.admin_crypto_price_overrides_ngn`.
+   * Pass `null` for a symbol to clear override (UI then uses live market quotes).
+   */
+  mergeAdminCryptoPriceOverrides: async (
+    updates: Partial<Record<(typeof ADMIN_LIST_PRICE_SYMBOLS)[number], AdminCryptoPriceOverrideRow | null>>,
+  ): Promise<ApiResponse<{ overrides: Partial<Record<string, AdminCryptoPriceOverrideRow>> }>> => {
+    try {
+      const supabase = createClient();
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError || !session) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      const { data: row, error: fetchError } = await supabase
+        .from('app_settings')
+        .select('additional_settings')
+        .eq('id', 1)
+        .maybeSingle();
+
+      if (fetchError) {
+        return { success: false, error: fetchError.message || 'Failed to load settings' };
+      }
+
+      const prevAdditional =
+        row?.additional_settings && typeof row.additional_settings === 'object'
+          ? { ...(row.additional_settings as Record<string, unknown>) }
+          : {};
+
+      const prevOverrides = parseAdminCryptoPriceOverrides(prevAdditional);
+      const nextOverrides: Record<string, AdminCryptoPriceOverrideRow> = { ...prevOverrides } as Record<
+        string,
+        AdminCryptoPriceOverrideRow
+      >;
+
+      for (const [sym, val] of Object.entries(updates)) {
+        const u = sym.toUpperCase() as (typeof ADMIN_LIST_PRICE_SYMBOLS)[number];
+        if (!(ADMIN_LIST_PRICE_SYMBOLS as readonly string[]).includes(u)) continue;
+        if (val === null) {
+          delete nextOverrides[u];
+        } else if (val && val.buy_ngn > 0 && val.sell_ngn > 0) {
+          nextOverrides[u] = { buy_ngn: val.buy_ngn, sell_ngn: val.sell_ngn };
+        }
+      }
+
+      const nextAdditional = {
+        ...prevAdditional,
+        [ADMIN_CRYPTO_PRICE_OVERRIDES_KEY]: nextOverrides,
+      };
+
+      const patch = {
+        additional_settings: nextAdditional,
+        updated_by: session.user.id,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { data: afterUpdate, error: updateError } = await supabase
+        .from('app_settings')
+        .update(patch)
+        .eq('id', 1)
+        .select('additional_settings')
+        .maybeSingle();
+
+      if (updateError) {
+        return { success: false, error: updateError.message || 'Failed to update list prices' };
+      }
+
+      if (!afterUpdate) {
+        const { error: insertError } = await supabase.from('app_settings').insert({
+          id: 1,
+          ...patch,
+        });
+        if (insertError) {
+          return { success: false, error: insertError.message || 'Failed to create app settings row' };
+        }
+      }
+
+      return {
+        success: true,
+        data: { overrides: parseAdminCryptoPriceOverrides(nextAdditional) },
+      };
+    } catch (error: unknown) {
+      const err = error as Error;
+      console.error('mergeAdminCryptoPriceOverrides:', err);
+      return {
+        success: false,
+        error: err?.message || 'Failed to merge list prices',
+      };
+    }
+  },
 };
 
 // Verification API
@@ -3761,45 +4010,65 @@ export interface VerificationStats {
 }
 
 export const verificationApi = {
-  // Helper function to convert Supabase storage path to public URL
-  getPublicStorageUrl: (storagePath: string | null | undefined): string | null => {
-    if (!storagePath) return null;
-    
-    // If it's already a full URL, return as is
-    if (storagePath.startsWith('http://') || storagePath.startsWith('https://')) {
-      return storagePath;
+  /**
+   * Resolve a stored verification doc reference into a usable URL.
+   *
+   * Why: verification documents bucket is private, so "public URLs" will 404.
+   * Admins should view docs via signed URLs (policies allow admin access).
+   *
+   * Accepts:
+   * - Full Supabase storage URLs (public or signed)
+   * - "bucket/path/to/file.jpg"
+   * - "path/to/file.jpg" (assumed to be in verification-documents)
+   */
+  getSignedStorageUrl: async (
+    supabase: ReturnType<typeof createClient>,
+    storageRef: string | null | undefined,
+    options?: { expiresInSeconds?: number },
+  ): Promise<string | null> => {
+    if (!storageRef) return null;
+
+    const expiresIn = options?.expiresInSeconds ?? 60 * 60; // 1 hour
+
+    // If it's already a signed URL, it should work until it expires.
+    if (storageRef.startsWith('http://') || storageRef.startsWith('https://')) {
+      // Try to extract bucket/path from any Supabase storage URL so we can re-sign (handles private bucket 404).
+      try {
+        const u = new URL(storageRef);
+        const marker = '/storage/v1/object/';
+        const idx = u.pathname.indexOf(marker);
+        if (idx >= 0) {
+          const after = u.pathname.slice(idx + marker.length); // e.g. "public/bucket/path..." or "sign/bucket/path..."
+          const parts = after.split('/').filter(Boolean);
+          const mode = parts[0]; // public | sign
+          const bucket = parts[1];
+          const path = parts.slice(2).join('/');
+          if (bucket && path) {
+            const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
+            if (!error && data?.signedUrl) return data.signedUrl;
+          }
+        }
+      } catch {
+        // fall through
+      }
+      return storageRef;
     }
-    
-    // Convert storage path to public URL
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    if (!supabaseUrl) {
-      console.warn('NEXT_PUBLIC_SUPABASE_URL not configured, cannot convert storage path to public URL');
-      return storagePath; // Fallback to original if no URL configured
-    }
-    
+
     // Remove leading slash if present
-    let cleanPath = storagePath.startsWith('/') ? storagePath.substring(1) : storagePath;
-    
-    // Check if path already includes storage API path
-    if (cleanPath.includes('/storage/v1/object/public/')) {
-      // Already a full storage URL path, just prepend supabase URL if needed
-      return cleanPath.startsWith('http') ? cleanPath : `${supabaseUrl}/${cleanPath}`;
+    const clean = storageRef.startsWith('/') ? storageRef.slice(1) : storageRef;
+
+    // If caller stored "bucket/path"
+    const commonBuckets = ['verification-documents', 'verifications', 'kyc-documents'];
+    const bucketFromPrefix = commonBuckets.find((b) => clean.startsWith(`${b}/`));
+    const bucket = bucketFromPrefix ?? 'verification-documents';
+    const path = bucketFromPrefix ? clean.slice(bucket.length + 1) : clean;
+
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
+    if (error || !data?.signedUrl) {
+      // Fall back to original reference for debugging
+      return storageRef;
     }
-    
-    // Common bucket names for verifications
-    const commonBuckets = ['verifications', 'verification-documents', 'kyc-documents'];
-    
-    // Check if path starts with a known bucket name
-    const hasBucketName = commonBuckets.some(bucket => cleanPath.startsWith(`${bucket}/`));
-    
-    if (hasBucketName) {
-      // Path already includes bucket name (e.g., "verifications/user_id/file.jpg")
-      return `${supabaseUrl}/storage/v1/object/public/${cleanPath}`;
-    }
-    
-    // If path doesn't contain a bucket name, assume it's in 'verifications' bucket
-    // This handles cases where only the file path is stored (e.g., "user_id/file.jpg")
-    return `${supabaseUrl}/storage/v1/object/public/verifications/${cleanPath}`;
+    return data.signedUrl;
   },
 
   getVerifications: async (params?: {
@@ -3928,28 +4197,28 @@ export const verificationApi = {
         );
       }
 
-      // Transform data to match Verification interface
-      const verifications: Verification[] = (data || []).map((v: any) => {
-        // Use helper function to convert storage paths to public URLs
-        const getPublicUrl = verificationApi.getPublicStorageUrl;
-        return {
-          id: v.id,
-          user_id: v.user_id,
-          full_name: v.full_name || '',
-          email: v.user_email || '',
-          phone_number: v.phone_number || '',
-          address: v.address || '',
-          nin: v.nin || '',
-          nin_front_url: getPublicUrl(v.nin_front_url),
-          nin_back_url: getPublicUrl(v.nin_back_url),
-          passport_photo_url: getPublicUrl(v.passport_photo_url),
-          status: v.status,
-          submitted_at: v.submitted_at,
-          reviewed_at: v.reviewed_at,
-          reviewed_by: v.reviewed_by,
-          rejection_reason: v.rejection_reason,
-        };
-      });
+      const verifications: Verification[] = await Promise.all(
+        (data || []).map(async (v: any) => {
+          const resolve = verificationApi.getSignedStorageUrl;
+          return {
+            id: v.id,
+            user_id: v.user_id,
+            full_name: v.full_name || '',
+            email: v.user_email || '',
+            phone_number: v.phone_number || '',
+            address: v.address || '',
+            nin: v.nin || '',
+            nin_front_url: await resolve(supabase, v.nin_front_url),
+            nin_back_url: await resolve(supabase, v.nin_back_url),
+            passport_photo_url: await resolve(supabase, v.passport_photo_url),
+            status: v.status,
+            submitted_at: v.submitted_at,
+            reviewed_at: v.reviewed_at,
+            reviewed_by: v.reviewed_by,
+            rejection_reason: v.rejection_reason,
+          };
+        }),
+      );
 
       return { success: true, data: verifications };
     } catch (error: any) {
@@ -4080,8 +4349,7 @@ export const verificationApi = {
         .eq('user_id', updatedVerification.user_id)
         .single();
 
-      // Use helper function to convert storage paths to public URLs
-      const getPublicUrl = verificationApi.getPublicStorageUrl;
+      const resolve = verificationApi.getSignedStorageUrl;
       
       const verificationData: Verification = {
         id: updatedVerification.id,
@@ -4091,9 +4359,9 @@ export const verificationApi = {
         phone_number: updatedVerification.phone_number || userProfile?.phone_number || '',
         address: updatedVerification.address || '',
         nin: updatedVerification.nin || '',
-        nin_front_url: getPublicUrl(updatedVerification.nin_front_url),
-        nin_back_url: getPublicUrl(updatedVerification.nin_back_url),
-        passport_photo_url: getPublicUrl(updatedVerification.passport_photo_url),
+        nin_front_url: await resolve(supabase, updatedVerification.nin_front_url),
+        nin_back_url: await resolve(supabase, updatedVerification.nin_back_url),
+        passport_photo_url: await resolve(supabase, updatedVerification.passport_photo_url),
         status: updatedVerification.status,
         submitted_at: updatedVerification.submitted_at,
         reviewed_at: updatedVerification.reviewed_at,
@@ -4175,8 +4443,7 @@ export const verificationApi = {
         .eq('user_id', updatedVerification.user_id)
         .single();
 
-      // Use helper function to convert storage paths to public URLs
-      const getPublicUrl = verificationApi.getPublicStorageUrl;
+      const resolve = verificationApi.getSignedStorageUrl;
       
       const verificationData: Verification = {
         id: updatedVerification.id,
@@ -4186,9 +4453,9 @@ export const verificationApi = {
         phone_number: updatedVerification.phone_number || userProfile?.phone_number || '',
         address: updatedVerification.address || '',
         nin: updatedVerification.nin || '',
-        nin_front_url: getPublicUrl(updatedVerification.nin_front_url),
-        nin_back_url: getPublicUrl(updatedVerification.nin_back_url),
-        passport_photo_url: getPublicUrl(updatedVerification.passport_photo_url),
+        nin_front_url: await resolve(supabase, updatedVerification.nin_front_url),
+        nin_back_url: await resolve(supabase, updatedVerification.nin_back_url),
+        passport_photo_url: await resolve(supabase, updatedVerification.passport_photo_url),
         status: updatedVerification.status,
         submitted_at: updatedVerification.submitted_at,
         reviewed_at: updatedVerification.reviewed_at,

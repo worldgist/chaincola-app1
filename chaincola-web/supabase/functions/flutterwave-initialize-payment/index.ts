@@ -205,10 +205,15 @@ serve(async (req) => {
 
     console.log(`💾 Created transaction record: ${transaction.id}`);
 
-    // Prepare Flutterwave payment request
-    // Use deeplink to navigate user back to app home page after payment
-    // Fallback to callback function URL if no redirect_url provided
-    const callbackUrl = redirect_url || `chaincola://home?payment=successful&tx_ref=${txRef}`;
+    // Prepare Flutterwave payment request — redirect back to app after checkout.
+    // Append our tx_ref when missing so the in-app WebView always has a ref to verify.
+    const base =
+      (typeof redirect_url === "string" && redirect_url.trim().length > 0)
+        ? redirect_url.trim()
+        : `chaincola://home?payment=successful`;
+    const hasTxRef = /(^|[?&])tx_ref=/.test(base);
+    const join = base.includes("?") ? "&" : "?";
+    const callbackUrl = hasTxRef ? base : `${base}${join}tx_ref=${encodeURIComponent(txRef)}`;
     
     const flutterwavePayload = {
       tx_ref: txRef,

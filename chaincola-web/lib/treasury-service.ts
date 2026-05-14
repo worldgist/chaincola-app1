@@ -32,7 +32,7 @@ export class TreasuryService {
         return null;
       }
 
-      return data?.[addressColumn] || null;
+      return (data as Record<string, string | null> | null)?.[addressColumn] ?? null;
     } catch (error) {
       console.error(`Error in getMainWalletAddress for ${asset}:`, error);
       return null;

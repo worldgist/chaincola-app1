@@ -58,7 +58,7 @@ export default function SendCryptoPage() {
       setBalanceLoading(true);
       const [balancesResult, pricesResult] = await Promise.all([
         getUserCryptoBalances(user.id),
-        getLunoPrices([crypto.symbol]),
+        getLunoPrices([crypto.symbol], { retailOverlay: false }),
       ]);
 
       if (balancesResult.balances?.[crypto.symbol]) {

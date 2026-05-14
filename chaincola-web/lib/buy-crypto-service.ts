@@ -21,6 +21,20 @@ export interface InstantBuyResponse {
     crypto_balance: number;
     crypto_symbol: string;
     transaction_id?: string;
+    ngn_gross_before?: number;
+    ngn_locked_before?: number;
+    ngn_available_before?: number;
+    ngn_amount_debited?: number;
+    crypto_amount_credited?: number;
+  };
+  transaction_id?: string;
+  instant_settlement?: {
+    ngn_debited_immediately: boolean;
+    crypto_credited_immediately: boolean;
+    system_inventory_debited_immediately: boolean;
+    user_balances_updated_immediately: boolean;
+    ledger_steps: string[];
+    atomic_single_transaction: boolean;
   };
   error?: string;
 }
@@ -99,6 +113,8 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
         rate: result.rate,
         fee_percentage: result.fee_percentage,
         balances: result.balances,
+        transaction_id: result.transaction_id,
+        instant_settlement: result.instant_settlement,
       };
     } else {
       return {

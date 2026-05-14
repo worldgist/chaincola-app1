@@ -7,6 +7,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import {
   fetchAlchemyUsdPricesBySymbols,
+  fetchSolUsdFromBinanceSpot,
   getAlchemyApiKey,
   getUsdToNgnRate,
 } from "../_shared/alchemy-prices.ts";
@@ -23,21 +24,13 @@ type PriceRow = {
   price_usd: number;
   price_ngn: number;
   last_updated: string;
-  source: "alchemy";
+  source: "alchemy" | "public_spot";
 };
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
-    const apiKey = getAlchemyApiKey();
-    if (!apiKey) {
-      return new Response(
-        JSON.stringify({ success: false, error: "ALCHEMY_API_KEY not set" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
     const url = new URL(req.url);
     const symbolsParam = url.searchParams.get("symbols");
     const requested = (symbolsParam ? symbolsParam.split(",") : DEFAULT_SYMBOLS)
@@ -46,18 +39,19 @@ serve(async (req) => {
     const symbols = [...new Set(requested)];
 
     const timestamp = new Date().toISOString();
+    /** NGN per 1 USD — live FX; market NGN = token USD spot × this rate. */
     const usdToNgn = await getUsdToNgnRate();
+    const apiKey = getAlchemyApiKey();
 
-    const map = await fetchAlchemyUsdPricesBySymbols(symbols);
+    const map = await fetchAlchemyUsdPricesBySymbols(apiKey ? symbols : []);
     const prices: Record<string, PriceRow> = {};
-    const missing: string[] = [];
 
     for (const sym of symbols) {
       const row = map.get(sym);
       if (!row || !row.usd || row.usd <= 0) {
-        missing.push(sym);
         continue;
       }
+      // NGN spot = USD/TOKEN (Alchemy) × NGN/USD (FX)
       const ngn = row.usd * usdToNgn;
       prices[sym] = {
         crypto_symbol: sym,
@@ -68,8 +62,36 @@ serve(async (req) => {
       };
     }
 
+    // SOL: Binance public SOL/USDT when Alchemy has no row (still real market spot × FX).
+    if (!prices["SOL"] && symbols.includes("SOL")) {
+      const fb = await fetchSolUsdFromBinanceSpot();
+      if (fb && fb.usd > 0) {
+        const ngn = fb.usd * usdToNgn;
+        prices["SOL"] = {
+          crypto_symbol: "SOL",
+          price_usd: fb.usd,
+          price_ngn: Math.round(ngn * 100) / 100,
+          last_updated: fb.lastUpdatedAt || timestamp,
+          source: "public_spot",
+        };
+      }
+    }
+
+    const missing = symbols.filter((s) => !prices[s]);
+
     // If Alchemy returns nothing for all symbols, surface a useful error for debugging.
     if (Object.keys(prices).length === 0 && symbols.length > 0) {
+      if (!apiKey) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error:
+              "ALCHEMY_API_KEY not set and no public spot fallback matched the requested symbols (SOL uses Binance when listed).",
+            missing,
+          }),
+          { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
       try {
         const qs = new URLSearchParams();
         qs.append("symbols", symbols[0]);

@@ -24,8 +24,6 @@ interface PriceResponse {
   volume_24h: number;
 }
 
-const USD_TO_NGN_RATE = 1650;
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });

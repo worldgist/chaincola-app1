@@ -4,6 +4,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoDepositNotification } from "../_shared/send-crypto-deposit-notification.ts";
+import { getUsdToNgnRate } from "../_shared/alchemy-prices.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -48,10 +49,9 @@ async function getSolPriceNgn(supabase: SupabaseClient): Promise<number> {
           return priceNgnRaw;
         }
       } else if (priceUsd > 0 && priceNgnRaw <= 0) {
-        // Only USD price available, convert using standard exchange rate (1650 NGN/USD)
-        const USD_TO_NGN_RATE = 1650;
-        const priceNgn = priceUsd * USD_TO_NGN_RATE;
-        console.log(`✅ Converting USD price to NGN: ₦${priceNgn.toFixed(2)} (${priceUsd} USD × ${USD_TO_NGN_RATE} NGN/USD)`);
+        const usdToNgn = await getUsdToNgnRate();
+        const priceNgn = priceUsd * usdToNgn;
+        console.log(`✅ Converting USD price to NGN: ₦${priceNgn.toFixed(2)} (${priceUsd} USD × ${usdToNgn} NGN/USD)`);
         return priceNgn;
       } else if (priceNgnRaw > 0) {
         // Only NGN price available, use directly
@@ -74,6 +74,38 @@ serve(async (req) => {
   }
 
   try {
+    function normalizeUrl(u: string): string {
+      return u.trim().replace(/\/+$/, '');
+    }
+
+    function getAlchemySolanaRpcUrl(): string {
+      const explicit =
+        Deno.env.get('ALCHEMY_SOLANA_RPC_URL') ||
+        Deno.env.get('ALCHEMY_SOLANA_URL') ||
+        Deno.env.get('ALCHEMY_SOLANA_ENDPOINT') ||
+        '';
+      const apiKey = (Deno.env.get('ALCHEMY_SOLANA_API_KEY') || Deno.env.get('ALCHEMY_API_KEY') || '').trim();
+
+      if (explicit) {
+        const cleaned = normalizeUrl(explicit);
+        // If user supplied a bare key by mistake, treat it as a key.
+        if (!cleaned.startsWith('http')) {
+          return `https://solana-mainnet.g.alchemy.com/v2/${cleaned}`;
+        }
+        // If user supplied a base /v2 URL without the key, append it when available.
+        if (apiKey && /\/v2$/.test(cleaned)) {
+          return `${cleaned}/${apiKey}`;
+        }
+        return cleaned;
+      }
+
+      if (apiKey) {
+        return `https://solana-mainnet.g.alchemy.com/v2/${apiKey}`;
+      }
+
+      return '';
+    }
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
     if (!supabaseUrl || !supabaseServiceKey) {
@@ -84,15 +116,15 @@ serve(async (req) => {
     }
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get Alchemy Solana API URL
-    const alchemyUrl =
-      Deno.env.get('ALCHEMY_SOLANA_URL') ||
-      (Deno.env.get('ALCHEMY_API_KEY')
-        ? `https://solana-mainnet.g.alchemy.com/v2/${Deno.env.get('ALCHEMY_API_KEY')}`
-        : '');
+    // Get Alchemy Solana JSON-RPC URL
+    const alchemyUrl = getAlchemySolanaRpcUrl();
     if (!alchemyUrl) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Missing Alchemy secret (ALCHEMY_SOLANA_URL or ALCHEMY_API_KEY)' }),
+        JSON.stringify({
+          success: false,
+          error:
+            'Missing Alchemy secret. Set ALCHEMY_SOLANA_RPC_URL (full URL) or ALCHEMY_SOLANA_API_KEY / ALCHEMY_API_KEY (key only).',
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

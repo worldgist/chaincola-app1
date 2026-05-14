@@ -30,7 +30,7 @@ export default function SellBtcPage() {
       const { balances } = await getUserCryptoBalances(user?.id || '');
       const btc = balances['BTC'];
       if (btc) {
-        setBtcBalance(parseFloat(btc.balance || '0'));
+        setBtcBalance(Number(btc.balance ?? 0));
       }
     } catch (error) {
       console.error('Error fetching BTC balance:', error);

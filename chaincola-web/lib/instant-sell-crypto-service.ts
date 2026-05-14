@@ -16,11 +16,30 @@ export interface InstantSellResponse {
   crypto_amount?: number;
   rate?: number;
   fee_percentage?: number;
+  /** Raw payload from edge function (crypto_balance, ngn_balance, system fields). */
+  new_balances?: Record<string, unknown>;
   balances?: {
     ngn_balance: number;
     crypto_balance: number;
     crypto_symbol: string;
     transaction_id?: string;
+  };
+  instant_settlement?: {
+    ngn_credited_immediately: boolean;
+    user_balances_updated_immediately: boolean;
+    system_treasury_booked_immediately: boolean;
+    ledger_steps: string[];
+    atomic_single_transaction: boolean;
+    on_chain_transfer?: {
+      ledger_instant_complete: boolean;
+      custody_sweep: {
+        status: string;
+        plan?: Record<string, unknown>;
+        transaction_row_metadata_merged?: boolean;
+        blockchain_broadcast_from_this_edge_function: boolean;
+        explanation?: string;
+      };
+    };
   };
   error?: string;
 }
@@ -96,10 +115,12 @@ export async function instantSellCrypto(request: InstantSellRequest): Promise<In
       return {
         success: true,
         ngn_amount: result.ngn_amount,
-        crypto_amount: result.crypto_amount,
+        crypto_amount: request.amount,
         rate: result.rate,
         fee_percentage: result.fee_percentage,
         balances: result.balances,
+        new_balances: result.new_balances,
+        instant_settlement: result.instant_settlement,
       };
     } else {
       return {

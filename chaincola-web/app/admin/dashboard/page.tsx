@@ -936,7 +936,7 @@ export default function AdminDashboard() {
     try {
       const [overviewRes, priceRes] = await Promise.all([
         cryptoApi.getCryptoOverview(),
-        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'TRX']),
+        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'TRX'], { retailOverlay: false }),
       ]);
 
       if (priceRes?.prices && Object.keys(priceRes.prices).length > 0) {
@@ -3006,20 +3006,20 @@ export default function AdminDashboard() {
             Crypto Management
           </button>
           <Link
-            href="/admin/pricing-engine"
-            className="w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors text-gray-700 hover:bg-gray-50 hover:text-purple-600"
-            onClick={() => setSidebarOpen(false)}
-          >
-            <span className="mr-3">💰</span>
-            Pricing Engine
-          </Link>
-          <Link
-            href="/admin/treasury"
+            href="/admin/wallet-management"
             className="w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors text-gray-700 hover:bg-gray-50 hover:text-purple-600"
             onClick={() => setSidebarOpen(false)}
           >
             <span className="mr-3">🏦</span>
-            Treasury Management
+            Wallet management
+          </Link>
+          <Link
+            href="/admin/wallet-management/deposit-management"
+            className="w-full flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors text-gray-700 hover:bg-gray-50 hover:text-purple-600"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <span className="mr-3">↓</span>
+            Crypto deposit management
           </Link>
           <Link
             href="/admin/flutterwave"

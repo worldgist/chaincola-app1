@@ -56,7 +56,7 @@ export default function AssetsPage() {
       
       const [balancesResult, pricesResult] = await Promise.all([
         getUserCryptoBalances(user.id),
-        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL']),
+        getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'], { retailOverlay: false }),
       ]);
 
       const assets: CryptoAsset[] = cryptoAssetsConfig.map((config) => {

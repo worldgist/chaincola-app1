@@ -1,4 +1,4 @@
-﻿export type Json =
+export type Json =
   | string
   | number
   | boolean
@@ -726,6 +726,42 @@ export type Database = {
           },
         ]
       }
+      blocked_wallets: {
+        Row: {
+          added_by: string | null
+          address: string
+          asset: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          reason: string
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          added_by?: string | null
+          address: string
+          asset?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          reason: string
+          source?: string
+          updated_at?: string
+        }
+        Update: {
+          added_by?: string | null
+          address?: string
+          asset?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          reason?: string
+          source?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       btc_deposits: {
         Row: {
           amount_btc: number
@@ -1016,6 +1052,60 @@ export type Database = {
           },
         ]
       }
+      device_fingerprints: {
+        Row: {
+          created_at: string
+          device_id: string
+          fingerprint_hash: string | null
+          first_seen_at: string
+          id: string
+          is_trusted: boolean
+          last_city: string | null
+          last_country: string | null
+          last_ip: string | null
+          last_seen_at: string
+          metadata: Json
+          platform: string | null
+          risk_flags: Json
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          device_id: string
+          fingerprint_hash?: string | null
+          first_seen_at?: string
+          id?: string
+          is_trusted?: boolean
+          last_city?: string | null
+          last_country?: string | null
+          last_ip?: string | null
+          last_seen_at?: string
+          metadata?: Json
+          platform?: string | null
+          risk_flags?: Json
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          device_id?: string
+          fingerprint_hash?: string | null
+          first_seen_at?: string
+          id?: string
+          is_trusted?: boolean
+          last_city?: string | null
+          last_country?: string | null
+          last_ip?: string | null
+          last_seen_at?: string
+          metadata?: Json
+          platform?: string | null
+          risk_flags?: Json
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       emergency_controls: {
         Row: {
           deposits_enabled: boolean
@@ -1057,6 +1147,50 @@ export type Database = {
           withdrawals_enabled?: boolean
         }
         Relationships: []
+      }
+      flutterwave_transfer_events: {
+        Row: {
+          created_at: string
+          event_type: string
+          id: string
+          payload: Json
+          reference: string | null
+          status: string | null
+          transfer_id: string | null
+          user_id: string | null
+          withdrawal_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          event_type: string
+          id?: string
+          payload?: Json
+          reference?: string | null
+          status?: string | null
+          transfer_id?: string | null
+          user_id?: string | null
+          withdrawal_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          event_type?: string
+          id?: string
+          payload?: Json
+          reference?: string | null
+          status?: string | null
+          transfer_id?: string | null
+          user_id?: string | null
+          withdrawal_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "flutterwave_transfer_events_withdrawal_id_fkey"
+            columns: ["withdrawal_id"]
+            isOneToOne: false
+            referencedRelation: "withdrawals"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       gift_card_sales: {
         Row: {
@@ -1347,81 +1481,6 @@ export type Database = {
           },
         ]
       }
-      liquidity_controls: {
-        Row: {
-          asset: string
-          created_at: string
-          current_balance: number | null
-          daily_withdrawal_limit: number | null
-          daily_withdrawal_used: number | null
-          freeze_reason: string | null
-          frozen_at: string | null
-          frozen_by: string | null
-          hourly_limit_reset_at: string | null
-          hourly_withdrawal_limit: number | null
-          hourly_withdrawal_used: number | null
-          id: string
-          is_active: boolean
-          is_frozen: boolean
-          last_updated_at: string | null
-          maximum_balance: number | null
-          minimum_balance: number | null
-          target_utilization_percentage: number | null
-          updated_at: string
-          utilization_percentage: number | null
-          wallet_type: string
-          withdrawal_limit_reset_at: string | null
-        }
-        Insert: {
-          asset: string
-          created_at?: string
-          current_balance?: number | null
-          daily_withdrawal_limit?: number | null
-          daily_withdrawal_used?: number | null
-          freeze_reason?: string | null
-          frozen_at?: string | null
-          frozen_by?: string | null
-          hourly_limit_reset_at?: string | null
-          hourly_withdrawal_limit?: number | null
-          hourly_withdrawal_used?: number | null
-          id?: string
-          is_active?: boolean
-          is_frozen?: boolean
-          last_updated_at?: string | null
-          maximum_balance?: number | null
-          minimum_balance?: number | null
-          target_utilization_percentage?: number | null
-          updated_at?: string
-          utilization_percentage?: number | null
-          wallet_type: string
-          withdrawal_limit_reset_at?: string | null
-        }
-        Update: {
-          asset?: string
-          created_at?: string
-          current_balance?: number | null
-          daily_withdrawal_limit?: number | null
-          daily_withdrawal_used?: number | null
-          freeze_reason?: string | null
-          frozen_at?: string | null
-          frozen_by?: string | null
-          hourly_limit_reset_at?: string | null
-          hourly_withdrawal_limit?: number | null
-          hourly_withdrawal_used?: number | null
-          id?: string
-          is_active?: boolean
-          is_frozen?: boolean
-          last_updated_at?: string | null
-          maximum_balance?: number | null
-          minimum_balance?: number | null
-          target_utilization_percentage?: number | null
-          updated_at?: string
-          utilization_percentage?: number | null
-          wallet_type?: string
-          withdrawal_limit_reset_at?: string | null
-        }
-        Relationships: []
-      }
       notifications: {
         Row: {
           created_at: string
@@ -1458,54 +1517,6 @@ export type Database = {
           type?: string
           updated_at?: string
           user_id?: string
-        }
-        Relationships: []
-      }
-      on_chain_balances: {
-        Row: {
-          asset: string
-          created_at: string
-          difference: number
-          fetch_error: string | null
-          id: string
-          last_fetched_at: string | null
-          ledger_inventory: number
-          network: string | null
-          notes: string | null
-          on_chain_balance: number
-          reconciliation_status: string
-          updated_at: string
-          wallet_address: string
-        }
-        Insert: {
-          asset: string
-          created_at?: string
-          difference?: number
-          fetch_error?: string | null
-          id?: string
-          last_fetched_at?: string | null
-          ledger_inventory?: number
-          network?: string | null
-          notes?: string | null
-          on_chain_balance?: number
-          reconciliation_status?: string
-          updated_at?: string
-          wallet_address: string
-        }
-        Update: {
-          asset?: string
-          created_at?: string
-          difference?: number
-          fetch_error?: string | null
-          id?: string
-          last_fetched_at?: string | null
-          ledger_inventory?: number
-          network?: string | null
-          notes?: string | null
-          on_chain_balance?: number
-          reconciliation_status?: string
-          updated_at?: string
-          wallet_address?: string
         }
         Relationships: []
       }
@@ -1656,66 +1667,6 @@ export type Database = {
         }
         Relationships: []
       }
-      pricing_engine_config: {
-        Row: {
-          asset: string
-          buy_spread_percentage: number
-          created_at: string
-          created_by: string | null
-          frozen_at: string | null
-          frozen_buy_price_ngn: number | null
-          frozen_sell_price_ngn: number | null
-          id: string
-          notes: string | null
-          override_buy_price_ngn: number | null
-          override_sell_price_ngn: number | null
-          price_frozen: boolean
-          retail_markup_fraction: number
-          sell_spread_percentage: number
-          trading_enabled: boolean
-          updated_at: string
-          updated_by: string | null
-        }
-        Insert: {
-          asset: string
-          buy_spread_percentage?: number
-          created_at?: string
-          created_by?: string | null
-          frozen_at?: string | null
-          frozen_buy_price_ngn?: number | null
-          frozen_sell_price_ngn?: number | null
-          id?: string
-          notes?: string | null
-          override_buy_price_ngn?: number | null
-          override_sell_price_ngn?: number | null
-          price_frozen?: boolean
-          retail_markup_fraction?: number
-          sell_spread_percentage?: number
-          trading_enabled?: boolean
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Update: {
-          asset?: string
-          buy_spread_percentage?: number
-          created_at?: string
-          created_by?: string | null
-          frozen_at?: string | null
-          frozen_buy_price_ngn?: number | null
-          frozen_sell_price_ngn?: number | null
-          id?: string
-          notes?: string | null
-          override_buy_price_ngn?: number | null
-          override_sell_price_ngn?: number | null
-          price_frozen?: boolean
-          retail_markup_fraction?: number
-          sell_spread_percentage?: number
-          trading_enabled?: boolean
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Relationships: []
-      }
       pricing_rules: {
         Row: {
           asset: string
@@ -1778,164 +1729,6 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
-      }
-      reconciliation_history: {
-        Row: {
-          asset: string
-          completed_at: string | null
-          created_at: string
-          discrepancy_after: number
-          discrepancy_before: number
-          discrepancy_resolved: boolean
-          id: string
-          initiated_by: string | null
-          ledger_balance_after: number
-          ledger_balance_before: number
-          on_chain_balance_after: number
-          on_chain_balance_before: number
-          on_chain_proof: Json | null
-          pending_balance_after: number | null
-          pending_balance_before: number | null
-          reconciliation_data: Json | null
-          reconciliation_method: string
-          resolution_action: string | null
-          resolution_notes: string | null
-          resolved_at: string | null
-          resolved_by: string | null
-          status: string
-        }
-        Insert: {
-          asset: string
-          completed_at?: string | null
-          created_at?: string
-          discrepancy_after: number
-          discrepancy_before: number
-          discrepancy_resolved?: boolean
-          id?: string
-          initiated_by?: string | null
-          ledger_balance_after: number
-          ledger_balance_before: number
-          on_chain_balance_after: number
-          on_chain_balance_before: number
-          on_chain_proof?: Json | null
-          pending_balance_after?: number | null
-          pending_balance_before?: number | null
-          reconciliation_data?: Json | null
-          reconciliation_method: string
-          resolution_action?: string | null
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          status?: string
-        }
-        Update: {
-          asset?: string
-          completed_at?: string | null
-          created_at?: string
-          discrepancy_after?: number
-          discrepancy_before?: number
-          discrepancy_resolved?: boolean
-          id?: string
-          initiated_by?: string | null
-          ledger_balance_after?: number
-          ledger_balance_before?: number
-          on_chain_balance_after?: number
-          on_chain_balance_before?: number
-          on_chain_proof?: Json | null
-          pending_balance_after?: number | null
-          pending_balance_before?: number | null
-          reconciliation_data?: Json | null
-          reconciliation_method?: string
-          resolution_action?: string | null
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          status?: string
-        }
-        Relationships: []
-      }
-      reconciliation_runs: {
-        Row: {
-          approved_at: string | null
-          approved_by: string | null
-          asset: string
-          completed_at: string | null
-          created_at: string
-          discrepancy: number
-          id: string
-          initiated_by: string | null
-          ledger_balance: number
-          on_chain_balance: number
-          pending_balance: number | null
-          reconciliation_history_id: string | null
-          rejection_reason: string | null
-          requires_approval: boolean | null
-          resolution_action: string | null
-          resolution_notes: string | null
-          resolved_at: string | null
-          resolved_by: string | null
-          run_data: Json | null
-          run_type: string
-          status: string
-          updated_at: string
-        }
-        Insert: {
-          approved_at?: string | null
-          approved_by?: string | null
-          asset: string
-          completed_at?: string | null
-          created_at?: string
-          discrepancy: number
-          id?: string
-          initiated_by?: string | null
-          ledger_balance: number
-          on_chain_balance: number
-          pending_balance?: number | null
-          reconciliation_history_id?: string | null
-          rejection_reason?: string | null
-          requires_approval?: boolean | null
-          resolution_action?: string | null
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          run_data?: Json | null
-          run_type: string
-          status?: string
-          updated_at?: string
-        }
-        Update: {
-          approved_at?: string | null
-          approved_by?: string | null
-          asset?: string
-          completed_at?: string | null
-          created_at?: string
-          discrepancy?: number
-          id?: string
-          initiated_by?: string | null
-          ledger_balance?: number
-          on_chain_balance?: number
-          pending_balance?: number | null
-          reconciliation_history_id?: string | null
-          rejection_reason?: string | null
-          requires_approval?: boolean | null
-          resolution_action?: string | null
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          run_data?: Json | null
-          run_type?: string
-          status?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "reconciliation_runs_reconciliation_history_id_fkey"
-            columns: ["reconciliation_history_id"]
-            isOneToOne: false
-            referencedRelation: "reconciliation_history"
-            referencedColumns: ["id"]
-          },
-        ]
       }
       reconciliations: {
         Row: {
@@ -2099,6 +1892,80 @@ export type Database = {
         }
         Relationships: []
       }
+      risk_logs: {
+        Row: {
+          action: string
+          action_type: string | null
+          amount: number | null
+          asset: string | null
+          context: Json | null
+          country: string | null
+          created_at: string
+          decision: string
+          destination_address: string | null
+          device_id: string | null
+          id: string
+          ip: string | null
+          metadata: Json
+          reasons: Json
+          related_transaction_id: string | null
+          risk_level: string | null
+          run_id: string | null
+          score: number
+          user_id: string | null
+        }
+        Insert: {
+          action: string
+          action_type?: string | null
+          amount?: number | null
+          asset?: string | null
+          context?: Json | null
+          country?: string | null
+          created_at?: string
+          decision: string
+          destination_address?: string | null
+          device_id?: string | null
+          id?: string
+          ip?: string | null
+          metadata?: Json
+          reasons?: Json
+          related_transaction_id?: string | null
+          risk_level?: string | null
+          run_id?: string | null
+          score?: number
+          user_id?: string | null
+        }
+        Update: {
+          action?: string
+          action_type?: string | null
+          amount?: number | null
+          asset?: string | null
+          context?: Json | null
+          country?: string | null
+          created_at?: string
+          decision?: string
+          destination_address?: string | null
+          device_id?: string | null
+          id?: string
+          ip?: string | null
+          metadata?: Json
+          reasons?: Json
+          related_transaction_id?: string | null
+          risk_level?: string | null
+          run_id?: string | null
+          score?: number
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "risk_logs_related_transaction_id_fkey"
+            columns: ["related_transaction_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sell_transactions: {
         Row: {
           client_order_id: string | null
@@ -2260,6 +2127,218 @@ export type Database = {
           {
             foreignKeyName: "sells_source_deposit_id_fkey"
             columns: ["source_deposit_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      settlement_batches: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          currency: string
+          id: string
+          metadata: Json
+          mode: string
+          reference: string
+          scheduled_for: string | null
+          status: string
+          total_amount: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          metadata?: Json
+          mode?: string
+          reference: string
+          scheduled_for?: string | null
+          status?: string
+          total_amount?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          metadata?: Json
+          mode?: string
+          reference?: string
+          scheduled_for?: string | null
+          status?: string
+          total_amount?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      settlement_logs: {
+        Row: {
+          actor_id: string | null
+          batch_id: string | null
+          created_at: string
+          event: string
+          id: string
+          legacy_settlement_id: string | null
+          payload: Json
+          queue_item_id: string
+        }
+        Insert: {
+          actor_id?: string | null
+          batch_id?: string | null
+          created_at?: string
+          event: string
+          id?: string
+          legacy_settlement_id?: string | null
+          payload?: Json
+          queue_item_id: string
+        }
+        Update: {
+          actor_id?: string | null
+          batch_id?: string | null
+          created_at?: string
+          event?: string
+          id?: string
+          legacy_settlement_id?: string | null
+          payload?: Json
+          queue_item_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "settlement_logs_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "settlement_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "settlement_logs_legacy_settlement_id_fkey"
+            columns: ["legacy_settlement_id"]
+            isOneToOne: false
+            referencedRelation: "settlements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "settlement_logs_queue_item_id_fkey"
+            columns: ["queue_item_id"]
+            isOneToOne: false
+            referencedRelation: "settlement_queue"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      settlement_queue: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          approved_for_execution: boolean
+          asset: string | null
+          batch_id: string | null
+          created_at: string
+          crypto_amount: number | null
+          dedupe_key: string | null
+          destination_address: string | null
+          execution: Json
+          fiat_amount: number | null
+          fiat_currency: string
+          id: string
+          legacy_settlement_id: string | null
+          mode: string
+          notes: string | null
+          payment_method: string | null
+          payment_provider: string | null
+          priority: number
+          processed_at: string | null
+          reconciliation: Json
+          scheduled_for: string | null
+          settlement_kind: string
+          source_transaction_id: string | null
+          status: string
+          updated_at: string
+          user_id: string
+          verification: Json
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_for_execution?: boolean
+          asset?: string | null
+          batch_id?: string | null
+          created_at?: string
+          crypto_amount?: number | null
+          dedupe_key?: string | null
+          destination_address?: string | null
+          execution?: Json
+          fiat_amount?: number | null
+          fiat_currency?: string
+          id?: string
+          legacy_settlement_id?: string | null
+          mode?: string
+          notes?: string | null
+          payment_method?: string | null
+          payment_provider?: string | null
+          priority?: number
+          processed_at?: string | null
+          reconciliation?: Json
+          scheduled_for?: string | null
+          settlement_kind: string
+          source_transaction_id?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+          verification?: Json
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          approved_for_execution?: boolean
+          asset?: string | null
+          batch_id?: string | null
+          created_at?: string
+          crypto_amount?: number | null
+          dedupe_key?: string | null
+          destination_address?: string | null
+          execution?: Json
+          fiat_amount?: number | null
+          fiat_currency?: string
+          id?: string
+          legacy_settlement_id?: string | null
+          mode?: string
+          notes?: string | null
+          payment_method?: string | null
+          payment_provider?: string | null
+          priority?: number
+          processed_at?: string | null
+          reconciliation?: Json
+          scheduled_for?: string | null
+          settlement_kind?: string
+          source_transaction_id?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+          verification?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "settlement_queue_batch_id_fkey"
+            columns: ["batch_id"]
+            isOneToOne: false
+            referencedRelation: "settlement_batches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "settlement_queue_legacy_settlement_id_fkey"
+            columns: ["legacy_settlement_id"]
+            isOneToOne: false
+            referencedRelation: "settlements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "settlement_queue_source_transaction_id_fkey"
+            columns: ["source_transaction_id"]
             isOneToOne: false
             referencedRelation: "transactions"
             referencedColumns: ["id"]
@@ -2443,50 +2522,6 @@ export type Database = {
         }
         Relationships: []
       }
-      support_messages: {
-        Row: {
-          created_at: string
-          id: string
-          is_admin: boolean
-          is_read: boolean
-          message: string
-          read_at: string | null
-          ticket_id: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          id?: string
-          is_admin?: boolean
-          is_read?: boolean
-          message: string
-          read_at?: string | null
-          ticket_id: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          created_at?: string
-          id?: string
-          is_admin?: boolean
-          is_read?: boolean
-          message?: string
-          read_at?: string | null
-          ticket_id?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "support_messages_ticket_id_fkey"
-            columns: ["ticket_id"]
-            isOneToOne: false
-            referencedRelation: "support_tickets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       support_chat_quick_topics: {
         Row: {
           auto_reply: string
@@ -2520,11 +2555,59 @@ export type Database = {
         }
         Relationships: []
       }
+      support_messages: {
+        Row: {
+          created_at: string
+          id: string
+          is_admin: boolean
+          is_read: boolean
+          message: string
+          read_at: string | null
+          sender_display_name: string | null
+          ticket_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_admin?: boolean
+          is_read?: boolean
+          message: string
+          read_at?: string | null
+          sender_display_name?: string | null
+          ticket_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_admin?: boolean
+          is_read?: boolean
+          message?: string
+          read_at?: string | null
+          sender_display_name?: string | null
+          ticket_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "support_messages_ticket_id_fkey"
+            columns: ["ticket_id"]
+            isOneToOne: false
+            referencedRelation: "support_tickets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       support_tickets: {
         Row: {
           assigned_to: string | null
           category: string
           created_at: string
+          customer_chat_display_name: string | null
           id: string
           last_message_at: string
           priority: string
@@ -2538,6 +2621,7 @@ export type Database = {
           assigned_to?: string | null
           category?: string
           created_at?: string
+          customer_chat_display_name?: string | null
           id?: string
           last_message_at?: string
           priority?: string
@@ -2551,6 +2635,7 @@ export type Database = {
           assigned_to?: string | null
           category?: string
           created_at?: string
+          customer_chat_display_name?: string | null
           id?: string
           last_message_at?: string
           priority?: string
@@ -2651,6 +2736,7 @@ export type Database = {
           usdt_eth_main_address: string | null
           usdt_inventory: number
           usdt_pending_inventory: number
+          usdt_sol_main_address: string | null
           usdt_tron_main_address: string | null
           xrp_inventory: number
           xrp_main_address: string | null
@@ -2678,6 +2764,7 @@ export type Database = {
           usdt_eth_main_address?: string | null
           usdt_inventory?: number
           usdt_pending_inventory?: number
+          usdt_sol_main_address?: string | null
           usdt_tron_main_address?: string | null
           xrp_inventory?: number
           xrp_main_address?: string | null
@@ -2705,10 +2792,71 @@ export type Database = {
           usdt_eth_main_address?: string | null
           usdt_inventory?: number
           usdt_pending_inventory?: number
+          usdt_sol_main_address?: string | null
           usdt_tron_main_address?: string | null
           xrp_inventory?: number
           xrp_main_address?: string | null
           xrp_pending_inventory?: number
+        }
+        Relationships: []
+      }
+      treasury_ngn_bucket_balances: {
+        Row: {
+          balance: number
+          bucket_code: string
+          updated_at: string
+        }
+        Insert: {
+          balance?: number
+          bucket_code: string
+          updated_at?: string
+        }
+        Update: {
+          balance?: number
+          bucket_code?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      treasury_ngn_ledger: {
+        Row: {
+          balance_after: number
+          bucket_code: string
+          category: string
+          created_at: string
+          created_by: string | null
+          delta: number
+          id: string
+          metadata: Json
+          reference_id: string | null
+          reference_type: string | null
+          user_id: string | null
+        }
+        Insert: {
+          balance_after: number
+          bucket_code: string
+          category: string
+          created_at?: string
+          created_by?: string | null
+          delta: number
+          id?: string
+          metadata?: Json
+          reference_id?: string | null
+          reference_type?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          balance_after?: number
+          bucket_code?: string
+          category?: string
+          created_at?: string
+          created_by?: string | null
+          delta?: number
+          id?: string
+          metadata?: Json
+          reference_id?: string | null
+          reference_type?: string | null
+          user_id?: string | null
         }
         Relationships: []
       }
@@ -2769,6 +2917,53 @@ export type Database = {
             foreignKeyName: "transaction_anomalies_transaction_id_fkey"
             columns: ["transaction_id"]
             isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      transaction_monitoring: {
+        Row: {
+          action_taken: string | null
+          created_at: string
+          id: string
+          reasons: Json
+          reviewed_at: string | null
+          reviewed_by: string | null
+          risk_level: string
+          score: number
+          transaction_id: string
+          updated_at: string
+        }
+        Insert: {
+          action_taken?: string | null
+          created_at?: string
+          id?: string
+          reasons?: Json
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          risk_level: string
+          score?: number
+          transaction_id: string
+          updated_at?: string
+        }
+        Update: {
+          action_taken?: string | null
+          created_at?: string
+          id?: string
+          reasons?: Json
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          risk_level?: string
+          score?: number
+          transaction_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transaction_monitoring_transaction_id_fkey"
+            columns: ["transaction_id"]
+            isOneToOne: true
             referencedRelation: "transactions"
             referencedColumns: ["id"]
           },
@@ -2888,530 +3083,6 @@ export type Database = {
           },
         ]
       }
-      treasury_alerts: {
-        Row: {
-          acknowledged_at: string | null
-          acknowledged_by: string | null
-          alert_type: string
-          asset: string | null
-          channels_sent: string[] | null
-          created_at: string
-          details: Json | null
-          entity_id: string | null
-          entity_type: string | null
-          id: string
-          message: string
-          resolution_notes: string | null
-          resolved_at: string | null
-          resolved_by: string | null
-          sent_at: string | null
-          severity: string
-          status: string
-          title: string
-          updated_at: string
-        }
-        Insert: {
-          acknowledged_at?: string | null
-          acknowledged_by?: string | null
-          alert_type: string
-          asset?: string | null
-          channels_sent?: string[] | null
-          created_at?: string
-          details?: Json | null
-          entity_id?: string | null
-          entity_type?: string | null
-          id?: string
-          message: string
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          sent_at?: string | null
-          severity?: string
-          status?: string
-          title: string
-          updated_at?: string
-        }
-        Update: {
-          acknowledged_at?: string | null
-          acknowledged_by?: string | null
-          alert_type?: string
-          asset?: string | null
-          channels_sent?: string[] | null
-          created_at?: string
-          details?: Json | null
-          entity_id?: string | null
-          entity_type?: string | null
-          id?: string
-          message?: string
-          resolution_notes?: string | null
-          resolved_at?: string | null
-          resolved_by?: string | null
-          sent_at?: string | null
-          severity?: string
-          status?: string
-          title?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      treasury_permissions: {
-        Row: {
-          created_at: string
-          description: string | null
-          id: string
-          is_active: boolean
-          permissions: Json
-          role_name: string
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          description?: string | null
-          id?: string
-          is_active?: boolean
-          permissions?: Json
-          role_name: string
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          description?: string | null
-          id?: string
-          is_active?: boolean
-          permissions?: Json
-          role_name?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      treasury_reconciliation_status: {
-        Row: {
-          alert_sent_at: string | null
-          asset: string
-          auto_resolve_enabled: boolean | null
-          available_liquidity: number | null
-          created_at: string
-          difference: number
-          difference_percentage: number | null
-          freeze_reason: string | null
-          frozen_at: string | null
-          frozen_by: string | null
-          health_score: number | null
-          health_status: string | null
-          id: string
-          is_frozen: boolean
-          is_low_balance: boolean | null
-          is_negative_inventory: boolean | null
-          is_on_chain_lower: boolean | null
-          last_auto_resolved_at: string | null
-          last_reconciled_at: string | null
-          ledger_balance: number
-          liquidity_percentage: number | null
-          low_balance_threshold: number | null
-          minimum_liquidity_threshold: number | null
-          negative_threshold: number | null
-          on_chain_balance: number
-          reconciliation_notes: string | null
-          status: string
-          tolerance_percentage: number | null
-          tolerance_threshold: number | null
-          updated_at: string
-        }
-        Insert: {
-          alert_sent_at?: string | null
-          asset: string
-          auto_resolve_enabled?: boolean | null
-          available_liquidity?: number | null
-          created_at?: string
-          difference?: number
-          difference_percentage?: number | null
-          freeze_reason?: string | null
-          frozen_at?: string | null
-          frozen_by?: string | null
-          health_score?: number | null
-          health_status?: string | null
-          id?: string
-          is_frozen?: boolean
-          is_low_balance?: boolean | null
-          is_negative_inventory?: boolean | null
-          is_on_chain_lower?: boolean | null
-          last_auto_resolved_at?: string | null
-          last_reconciled_at?: string | null
-          ledger_balance?: number
-          liquidity_percentage?: number | null
-          low_balance_threshold?: number | null
-          minimum_liquidity_threshold?: number | null
-          negative_threshold?: number | null
-          on_chain_balance?: number
-          reconciliation_notes?: string | null
-          status?: string
-          tolerance_percentage?: number | null
-          tolerance_threshold?: number | null
-          updated_at?: string
-        }
-        Update: {
-          alert_sent_at?: string | null
-          asset?: string
-          auto_resolve_enabled?: boolean | null
-          available_liquidity?: number | null
-          created_at?: string
-          difference?: number
-          difference_percentage?: number | null
-          freeze_reason?: string | null
-          frozen_at?: string | null
-          frozen_by?: string | null
-          health_score?: number | null
-          health_status?: string | null
-          id?: string
-          is_frozen?: boolean
-          is_low_balance?: boolean | null
-          is_negative_inventory?: boolean | null
-          is_on_chain_lower?: boolean | null
-          last_auto_resolved_at?: string | null
-          last_reconciled_at?: string | null
-          ledger_balance?: number
-          liquidity_percentage?: number | null
-          low_balance_threshold?: number | null
-          minimum_liquidity_threshold?: number | null
-          negative_threshold?: number | null
-          on_chain_balance?: number
-          reconciliation_notes?: string | null
-          status?: string
-          tolerance_percentage?: number | null
-          tolerance_threshold?: number | null
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      treasury_reports: {
-        Row: {
-          created_at: string
-          end_date: string | null
-          export_count: number | null
-          exported_at: string | null
-          file_path: string | null
-          file_size_bytes: number | null
-          generated_at: string | null
-          generated_by: string | null
-          id: string
-          is_export_ready: boolean
-          is_regulatory: boolean
-          metadata: Json | null
-          notes: string | null
-          period_end: string
-          period_start: string
-          regulatory_category: string | null
-          regulatory_compliant: boolean
-          report_data: Json
-          report_format: string
-          report_type: string
-          start_date: string | null
-          status: string
-          updated_at: string
-        }
-        Insert: {
-          created_at?: string
-          end_date?: string | null
-          export_count?: number | null
-          exported_at?: string | null
-          file_path?: string | null
-          file_size_bytes?: number | null
-          generated_at?: string | null
-          generated_by?: string | null
-          id?: string
-          is_export_ready?: boolean
-          is_regulatory?: boolean
-          metadata?: Json | null
-          notes?: string | null
-          period_end: string
-          period_start: string
-          regulatory_category?: string | null
-          regulatory_compliant?: boolean
-          report_data?: Json
-          report_format?: string
-          report_type: string
-          start_date?: string | null
-          status?: string
-          updated_at?: string
-        }
-        Update: {
-          created_at?: string
-          end_date?: string | null
-          export_count?: number | null
-          exported_at?: string | null
-          file_path?: string | null
-          file_size_bytes?: number | null
-          generated_at?: string | null
-          generated_by?: string | null
-          id?: string
-          is_export_ready?: boolean
-          is_regulatory?: boolean
-          metadata?: Json | null
-          notes?: string | null
-          period_end?: string
-          period_start?: string
-          regulatory_category?: string | null
-          regulatory_compliant?: boolean
-          report_data?: Json
-          report_format?: string
-          report_type?: string
-          start_date?: string | null
-          status?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      treasury_risk_alerts: {
-        Row: {
-          acknowledged_at: string | null
-          acknowledged_by: string | null
-          alert_type: string
-          asset: string | null
-          created_at: string
-          current_value: number | null
-          description: string
-          details: Json | null
-          difference: number | null
-          id: string
-          resolved_at: string | null
-          severity: string
-          status: string
-          threshold_value: number | null
-          title: string
-          updated_at: string
-        }
-        Insert: {
-          acknowledged_at?: string | null
-          acknowledged_by?: string | null
-          alert_type: string
-          asset?: string | null
-          created_at?: string
-          current_value?: number | null
-          description: string
-          details?: Json | null
-          difference?: number | null
-          id?: string
-          resolved_at?: string | null
-          severity?: string
-          status?: string
-          threshold_value?: number | null
-          title: string
-          updated_at?: string
-        }
-        Update: {
-          acknowledged_at?: string | null
-          acknowledged_by?: string | null
-          alert_type?: string
-          asset?: string | null
-          created_at?: string
-          current_value?: number | null
-          description?: string
-          details?: Json | null
-          difference?: number | null
-          id?: string
-          resolved_at?: string | null
-          severity?: string
-          status?: string
-          threshold_value?: number | null
-          title?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
-      treasury_threshold_rules: {
-        Row: {
-          alert_channels: string[] | null
-          alert_frequency_minutes: number | null
-          alert_on_critical: boolean
-          alert_on_minimum: boolean
-          asset: string
-          auto_disable_trading: boolean
-          created_at: string
-          created_by: string | null
-          critical_balance: number
-          id: string
-          is_active: boolean
-          last_alert_sent_at: string | null
-          minimum_balance: number
-          notes: string | null
-          optimal_balance: number | null
-          updated_at: string
-          updated_by: string | null
-        }
-        Insert: {
-          alert_channels?: string[] | null
-          alert_frequency_minutes?: number | null
-          alert_on_critical?: boolean
-          alert_on_minimum?: boolean
-          asset: string
-          auto_disable_trading?: boolean
-          created_at?: string
-          created_by?: string | null
-          critical_balance?: number
-          id?: string
-          is_active?: boolean
-          last_alert_sent_at?: string | null
-          minimum_balance?: number
-          notes?: string | null
-          optimal_balance?: number | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Update: {
-          alert_channels?: string[] | null
-          alert_frequency_minutes?: number | null
-          alert_on_critical?: boolean
-          alert_on_minimum?: boolean
-          asset?: string
-          auto_disable_trading?: boolean
-          created_at?: string
-          created_by?: string | null
-          critical_balance?: number
-          id?: string
-          is_active?: boolean
-          last_alert_sent_at?: string | null
-          minimum_balance?: number
-          notes?: string | null
-          optimal_balance?: number | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Relationships: []
-      }
-      treasury_wallet_addresses: {
-        Row: {
-          address: string
-          asset: string
-          created_at: string
-          created_by: string | null
-          id: string
-          is_active: boolean
-          label: string | null
-          network: string
-          notes: string | null
-          updated_at: string
-          updated_by: string | null
-        }
-        Insert: {
-          address: string
-          asset: string
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          is_active?: boolean
-          label?: string | null
-          network?: string
-          notes?: string | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Update: {
-          address?: string
-          asset?: string
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          is_active?: boolean
-          label?: string | null
-          network?: string
-          notes?: string | null
-          updated_at?: string
-          updated_by?: string | null
-        }
-        Relationships: []
-      }
-      treasury_wallet_balances: {
-        Row: {
-          asset: string
-          balance: number
-          balance_usd: number | null
-          created_at: string
-          fetch_error: string | null
-          id: string
-          last_fetched_at: string | null
-          updated_at: string
-          wallet_id: string
-        }
-        Insert: {
-          asset: string
-          balance?: number
-          balance_usd?: number | null
-          created_at?: string
-          fetch_error?: string | null
-          id?: string
-          last_fetched_at?: string | null
-          updated_at?: string
-          wallet_id: string
-        }
-        Update: {
-          asset?: string
-          balance?: number
-          balance_usd?: number | null
-          created_at?: string
-          fetch_error?: string | null
-          id?: string
-          last_fetched_at?: string | null
-          updated_at?: string
-          wallet_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "treasury_wallet_balances_wallet_id_fkey"
-            columns: ["wallet_id"]
-            isOneToOne: false
-            referencedRelation: "treasury_wallets"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      treasury_wallets: {
-        Row: {
-          btc_address: string | null
-          created_at: string
-          description: string | null
-          eth_address: string | null
-          id: string
-          is_active: boolean
-          name: string
-          sol_address: string | null
-          type: string
-          updated_at: string
-          usdc_address: string | null
-          usdt_address: string | null
-          xrp_address: string | null
-        }
-        Insert: {
-          btc_address?: string | null
-          created_at?: string
-          description?: string | null
-          eth_address?: string | null
-          id?: string
-          is_active?: boolean
-          name: string
-          sol_address?: string | null
-          type: string
-          updated_at?: string
-          usdc_address?: string | null
-          usdt_address?: string | null
-          xrp_address?: string | null
-        }
-        Update: {
-          btc_address?: string | null
-          created_at?: string
-          description?: string | null
-          eth_address?: string | null
-          id?: string
-          is_active?: boolean
-          name?: string
-          sol_address?: string | null
-          type?: string
-          updated_at?: string
-          usdc_address?: string | null
-          usdt_address?: string | null
-          xrp_address?: string | null
-        }
-        Relationships: []
-      }
       user_bank_accounts: {
         Row: {
           account_name: string
@@ -3454,6 +3125,30 @@ export type Database = {
           updated_at?: string | null
           user_id?: string
           verified_at?: string | null
+        }
+        Relationships: []
+      }
+      user_notification_preferences: {
+        Row: {
+          created_at: string
+          email_notifications_enabled: boolean
+          push_notifications_enabled: boolean
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          email_notifications_enabled?: boolean
+          push_notifications_enabled?: boolean
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          email_notifications_enabled?: boolean
+          push_notifications_enabled?: boolean
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
@@ -3613,45 +3308,6 @@ export type Database = {
         }
         Relationships: []
       }
-      user_treasury_roles: {
-        Row: {
-          approval_workflow: Json | null
-          assigned_at: string | null
-          assigned_by: string | null
-          created_at: string
-          id: string
-          is_active: boolean
-          requires_approval: boolean
-          role_name: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          approval_workflow?: Json | null
-          assigned_at?: string | null
-          assigned_by?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          requires_approval?: boolean
-          role_name: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          approval_workflow?: Json | null
-          assigned_at?: string | null
-          assigned_by?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          requires_approval?: boolean
-          role_name?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
       user_wallets: {
         Row: {
           btc_balance: number
@@ -3721,122 +3377,6 @@ export type Database = {
           locked_balance?: number
           updated_at?: string
           user_id?: string
-        }
-        Relationships: []
-      }
-      wallet_registry: {
-        Row: {
-          asset: string
-          blockchain_network: string
-          created_at: string
-          current_balance: number | null
-          daily_withdrawal_limit: number | null
-          deprecated_at: string | null
-          deprecated_reason: string | null
-          environment: string
-          id: string
-          is_active: boolean
-          is_deprecated: boolean
-          last_balance_check_at: string | null
-          last_rotated_at: string | null
-          metadata: Json | null
-          monthly_withdrawal_limit: number | null
-          notes: string | null
-          polling_schedule_minutes: number | null
-          rotation_schedule_days: number | null
-          single_transaction_limit: number | null
-          updated_at: string
-          wallet_address: string
-          wallet_name: string
-          wallet_type_id: string
-          weekly_withdrawal_limit: number | null
-        }
-        Insert: {
-          asset: string
-          blockchain_network: string
-          created_at?: string
-          current_balance?: number | null
-          daily_withdrawal_limit?: number | null
-          deprecated_at?: string | null
-          deprecated_reason?: string | null
-          environment?: string
-          id?: string
-          is_active?: boolean
-          is_deprecated?: boolean
-          last_balance_check_at?: string | null
-          last_rotated_at?: string | null
-          metadata?: Json | null
-          monthly_withdrawal_limit?: number | null
-          notes?: string | null
-          polling_schedule_minutes?: number | null
-          rotation_schedule_days?: number | null
-          single_transaction_limit?: number | null
-          updated_at?: string
-          wallet_address: string
-          wallet_name: string
-          wallet_type_id: string
-          weekly_withdrawal_limit?: number | null
-        }
-        Update: {
-          asset?: string
-          blockchain_network?: string
-          created_at?: string
-          current_balance?: number | null
-          daily_withdrawal_limit?: number | null
-          deprecated_at?: string | null
-          deprecated_reason?: string | null
-          environment?: string
-          id?: string
-          is_active?: boolean
-          is_deprecated?: boolean
-          last_balance_check_at?: string | null
-          last_rotated_at?: string | null
-          metadata?: Json | null
-          monthly_withdrawal_limit?: number | null
-          notes?: string | null
-          polling_schedule_minutes?: number | null
-          rotation_schedule_days?: number | null
-          single_transaction_limit?: number | null
-          updated_at?: string
-          wallet_address?: string
-          wallet_name?: string
-          wallet_type_id?: string
-          weekly_withdrawal_limit?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "wallet_registry_wallet_type_id_fkey"
-            columns: ["wallet_type_id"]
-            isOneToOne: false
-            referencedRelation: "wallet_types"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      wallet_types: {
-        Row: {
-          created_at: string
-          description: string | null
-          id: string
-          max_balance_threshold: number | null
-          name: string
-          security_level: number
-        }
-        Insert: {
-          created_at?: string
-          description?: string | null
-          id?: string
-          max_balance_threshold?: number | null
-          name: string
-          security_level: number
-        }
-        Update: {
-          created_at?: string
-          description?: string | null
-          id?: string
-          max_balance_threshold?: number | null
-          name?: string
-          security_level?: number
         }
         Relationships: []
       }
@@ -4072,6 +3612,10 @@ export type Database = {
         }
         Returns: boolean
       }
+      admin_treasury_ngn_move_between_buckets: {
+        Args: { p_amount: number; p_from_bucket: string; p_note?: string; p_to_bucket: string }
+        Returns: undefined
+      }
       admin_refund_transaction: {
         Args: {
           p_admin_user_id: string
@@ -4151,18 +3695,6 @@ export type Database = {
           success: boolean
         }[]
       }
-      check_and_create_risk_alerts: {
-        Args: {
-          p_asset: string
-          p_is_low: boolean
-          p_is_negative: boolean
-          p_is_on_chain_lower: boolean
-          p_ledger_balance: number
-          p_on_chain_balance?: number
-          p_status: string
-        }
-        Returns: undefined
-      }
       check_asset_auto_disable: { Args: { p_asset: string }; Returns: boolean }
       check_balance_threshold: {
         Args: { p_asset: string; p_current_balance: number }
@@ -4183,6 +3715,10 @@ export type Database = {
         }[]
       }
       check_ngn_float_threshold: { Args: never; Returns: Json }
+      check_signup_availability: {
+        Args: { p_email: string; p_phone: string }
+        Returns: Json
+      }
       confirm_pending_adjustment: {
         Args: {
           p_adjustment_id: string
@@ -4298,7 +3834,15 @@ export type Database = {
         Returns: boolean
       }
       credit_wallet: {
-        Args: { p_amount: number; p_currency?: string; p_user_id: string }
+        Args: {
+          p_amount: number
+          p_currency?: string
+          p_ledger_fee_amount?: number | null
+          p_ledger_payout_amount?: number | null
+          p_ledger_ref_id?: string | null
+          p_ledger_ref_type?: string | null
+          p_user_id: string
+        }
         Returns: boolean
       }
       debit_crypto_wallet: {
@@ -4310,7 +3854,15 @@ export type Database = {
         Returns: boolean
       }
       debit_wallet: {
-        Args: { p_amount: number; p_currency?: string; p_user_id: string }
+        Args: {
+          p_amount: number
+          p_currency?: string
+          p_ledger_fee_amount?: number | null
+          p_ledger_payout_amount?: number | null
+          p_ledger_ref_id?: string | null
+          p_ledger_ref_type?: string | null
+          p_user_id: string
+        }
         Returns: boolean
       }
       expire_price_overrides: { Args: never; Returns: undefined }
@@ -4361,28 +3913,6 @@ export type Database = {
           p_start_date?: string
         }
         Returns: Json
-      }
-      get_all_pricing_engine_configs: {
-        Args: never
-        Returns: {
-          asset: string
-          buy_spread_percentage: number
-          created_at: string
-          created_by: string
-          frozen_at: string
-          frozen_buy_price_ngn: number
-          frozen_sell_price_ngn: number
-          id: string
-          notes: string
-          override_buy_price_ngn: number
-          override_sell_price_ngn: number
-          price_frozen: boolean
-          retail_markup_fraction: number
-          sell_spread_percentage: number
-          trading_enabled: boolean
-          updated_at: string
-          updated_by: string
-        }[]
       }
       get_app_settings: { Args: never; Returns: Json }
       get_available_liquidity: { Args: { p_asset: string }; Returns: number }
@@ -4510,23 +4040,6 @@ export type Database = {
           status: string
           transaction_type: string
           user_id: string
-        }[]
-      }
-      get_pricing_engine_config: {
-        Args: { p_asset: string }
-        Returns: {
-          asset: string
-          buy_spread_percentage: number
-          frozen_at: string
-          frozen_buy_price_ngn: number
-          frozen_sell_price_ngn: number
-          id: string
-          override_buy_price_ngn: number
-          override_sell_price_ngn: number
-          price_frozen: boolean
-          retail_markup_fraction: number
-          sell_spread_percentage: number
-          trading_enabled: boolean
         }[]
       }
       get_public_app_settings: {
@@ -4974,20 +4487,11 @@ export type Database = {
         }
         Returns: undefined
       }
-      set_pricing_engine_config: {
-        Args: {
-          p_admin_user_id?: string
-          p_asset: string
-          p_buy_spread_percentage?: number
-          p_notes?: string
-          p_override_buy_price_ngn?: number
-          p_override_sell_price_ngn?: number
-          p_price_frozen?: boolean
-          p_retail_markup_fraction?: number
-          p_sell_spread_percentage?: number
-          p_trading_enabled?: boolean
-        }
-        Returns: string
+      signup_canonical_phone: { Args: { digits: string }; Returns: string }
+      signup_phone_digits: { Args: { input: string }; Returns: string }
+      signup_phones_equivalent: {
+        Args: { input_phone: string; stored_phone: string }
+        Returns: boolean
       }
       swap_crypto: {
         Args: {
@@ -5016,6 +4520,13 @@ export type Database = {
         Returns: undefined
       }
       text_to_bytea: { Args: { data: string }; Returns: string }
+      transaction_hash_duplicate_counts: {
+        Args: { p_max_groups?: number }
+        Returns: {
+          ct: number
+          tx_hash: string
+        }[]
+      }
       unlock_btc_for_sell: {
         Args: { p_btc_amount: number; p_user_id: string }
         Returns: boolean

@@ -16,6 +16,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "ChainCola - Your Trusted Cryptocurrency Wallet & Exchange",
   description: "Store, send, receive, buy, sell, and convert cryptocurrencies with top-tier security. Your trusted cryptocurrency wallet and exchange platform.",
+  icons: {
+    icon: "/file.svg",
+  },
 };
 
 export default function RootLayout({

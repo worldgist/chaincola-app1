@@ -6,6 +6,7 @@
  */
 
 import { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getTatumApiKey, tatumBtcAddressBalanceBtc } from "./tatum-bitcoin.ts";
 
 export interface SweepResult {
   success: boolean;
@@ -138,30 +139,11 @@ export async function getOnChainBalance(
 }
 
 async function getBitcoinBalance(address: string): Promise<number> {
-  // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
-  const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
-                        Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                        'https://bitcoin-mainnet.g.alchemy.com/v2/rq1GQ1LbhwToT3n4E6IIB';
-  
-  const alchemyUrl = bitcoinRpcUrl;
-  
-  const response = await fetch(alchemyUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'getreceivedbyaddress',
-      params: [address, 0],
-      id: 1,
-    }),
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Bitcoin API error: ${response.status}`);
+  if (!getTatumApiKey()) {
+    console.warn("getBitcoinBalance: TATUM_API_KEY missing; returning 0");
+    return 0;
   }
-  
-  const data = await response.json();
-  return parseFloat(data.result || '0');
+  return tatumBtcAddressBalanceBtc(address);
 }
 
 async function getEthereumBalance(address: string): Promise<number> {

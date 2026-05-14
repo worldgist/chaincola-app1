@@ -39,30 +39,28 @@ async function checkSolNgnValue() {
     console.log(`📦 Current SOL Inventory: ${solInventory.toFixed(8)} SOL`);
     console.log(`   Last Updated: ${new Date(systemWallet.updated_at).toLocaleString()}\n`);
 
-    // 2. Get current SOL price
-    // Try to get from pricing engine config or luno prices
+    // 2. Get current SOL price (crypto_prices table, then edge)
     let solPriceNGN = null;
 
-    // Method 1: Try pricing engine config
-    const { data: pricingConfig, error: pricingError } = await supabase
-      .from('pricing_engine_config')
-      .select('buy_price, sell_price')
-      .eq('asset', 'SOL')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    const { data: cpRow } = await supabase
+      .from('crypto_prices')
+      .select('price_ngn, bid, ask')
+      .eq('crypto_symbol', 'SOL')
+      .maybeSingle();
 
-    if (!pricingError && pricingConfig) {
-      // Use average of buy and sell price
-      solPriceNGN = (parseFloat(pricingConfig.buy_price) + parseFloat(pricingConfig.sell_price)) / 2;
-      console.log(`💰 SOL Price (from pricing engine):`);
-      console.log(`   Buy Price: ₦${parseFloat(pricingConfig.buy_price).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Sell Price: ₦${parseFloat(pricingConfig.sell_price).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-      console.log(`   Average: ₦${solPriceNGN.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n`);
-    } else {
-      // Method 2: Try to get from Luno prices function
-      console.log('⚠️  Pricing engine config not found, trying to get live price...\n');
+    if (cpRow) {
+      const bid = parseFloat(cpRow.bid || 0);
+      const ask = parseFloat(cpRow.ask || 0);
+      const mid = parseFloat(cpRow.price_ngn || 0);
+      if (bid > 0 && ask > 0) solPriceNGN = (bid + ask) / 2;
+      else if (mid > 0) solPriceNGN = mid;
+      if (solPriceNGN) {
+        console.log(`💰 SOL Price (from crypto_prices): ₦${solPriceNGN.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}\n`);
+      }
+    }
+
+    if (!solPriceNGN) {
+      console.log('⚠️  No SOL row in crypto_prices, trying edge get-luno-prices...\n');
       
       // Call get-luno-prices function if available
       try {

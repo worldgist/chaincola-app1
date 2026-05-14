@@ -74,3 +74,5 @@ scripts/data/*-export.sql
 # package-lock.json
 # yarn.lock
 node_modules
+
+.vercel

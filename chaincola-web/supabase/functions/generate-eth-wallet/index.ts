@@ -143,7 +143,24 @@ serve(async (req) => {
 
     // Parse request body
     const body = await req.json();
-    const { network = 'mainnet', force_new = false } = body;
+    const { user_id: body_user_id, network = 'mainnet', force_new = false } = body;
+
+    const targetUserId = body_user_id || user.id;
+
+    if (body_user_id && body_user_id !== user.id) {
+      const { data: callerProfile } = await supabase
+        .from("user_profiles")
+        .select("is_admin, role")
+        .eq("user_id", user.id)
+        .single();
+
+      if (!callerProfile || (!callerProfile.is_admin && callerProfile.role !== "admin")) {
+        return new Response(
+          JSON.stringify({ error: "Admin access required to generate wallets for other users" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    }
 
     // Validate network
     if (network !== 'mainnet' && network !== 'testnet') {
@@ -158,7 +175,7 @@ serve(async (req) => {
       const { data: existingWallet } = await supabase
         .from("crypto_wallets")
         .select("*")
-        .eq("user_id", user.id)
+        .eq("user_id", targetUserId)
         .eq("asset", "ETH")
         .eq("network", network)
         .single();
@@ -177,11 +194,11 @@ serve(async (req) => {
       }
     } else {
       // Force new wallet - delete existing wallet first
-      console.log(`🗑️ Force new wallet requested - deleting existing ETH wallet for user ${user.id}`);
+      console.log(`🗑️ Force new wallet requested - deleting existing ETH wallet for user ${targetUserId}`);
       const { error: deleteError } = await supabase
         .from("crypto_wallets")
         .delete()
-        .eq("user_id", user.id)
+        .eq("user_id", targetUserId)
         .eq("asset", "ETH")
         .eq("network", network);
 
@@ -200,7 +217,7 @@ serve(async (req) => {
     // ethers.js handles all cryptographic operations securely.
     // ============================================================
     
-    console.log(`🔑 Generating new ETH wallet for user ${user.id} on ${network}...`);
+    console.log(`🔑 Generating new ETH wallet for user ${targetUserId} on ${network}...`);
 
     // Generate a fresh new wallet with cryptographically secure random private key
     // ethers.Wallet.createRandom() uses Web Crypto API for secure randomness
@@ -267,7 +284,7 @@ serve(async (req) => {
     const { data: newWallet, error: insertError } = await supabase
       .from("crypto_wallets")
       .insert({
-        user_id: user.id,
+        user_id: targetUserId,
         asset: "ETH",
         network: network,
         address: walletAddress,

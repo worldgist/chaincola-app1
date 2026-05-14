@@ -1,175 +1,99 @@
-// Get Bitcoin Wallet Balance with Fiat Conversion Edge Function
-// Feature 1: Wallet balance checking with fiat conversion (NGN, USD)
+// User BTC balance (on-chain via Tatum) + fiat from Luno tickers (XBTUSD / XBTNGN).
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { fetchBtcNgnFromLuno, fetchBtcUsdFromLuno } from "../_shared/luno-btc-price.ts";
+import { getUsdToNgnRate } from "../_shared/alchemy-prices.ts";
 import {
-  fetchAlchemyUsdForSymbol,
-  getUsdToNgnRate,
-} from "../_shared/alchemy-prices.ts";
+  getTatumApiKey,
+  getTatumApiKeyMissingMessage,
+  tatumBtcAddressBalanceBtc,
+} from "../_shared/tatum-bitcoin.ts";
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get user from auth token
-    const authHeader = req.headers.get('Authorization');
+    const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Missing authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: false, error: "Missing authorization header" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const token = authHeader.replace('Bearer ', '');
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const token = authHeader.replace("Bearer ", "");
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token);
     if (authError || !user) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Invalid or expired token' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: false, error: "Invalid or expired token" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    // Get Bitcoin RPC URL (Alchemy or custom RPC fallback)
-    const bitcoinRpcUrl = Deno.env.get('BITCOIN_RPC_URL') || 
-                          Deno.env.get('ALCHEMY_BITCOIN_URL') ||
-                          'https://bitcoin-mainnet.g.alchemy.com/v2/rq1GQ1LbhwToT3n4E6IIB';
-    const alchemyUrl = bitcoinRpcUrl;
+    if (!getTatumApiKey()) {
+      return new Response(JSON.stringify({ success: false, error: getTatumApiKeyMissingMessage() }), {
+        status: 503,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    // Get user's Bitcoin wallet address
     const { data: wallet, error: walletError } = await supabase
-      .from('crypto_wallets')
-      .select('address')
-      .eq('user_id', user.id)
-      .eq('asset', 'BTC')
-      .eq('network', 'mainnet')
+      .from("crypto_wallets")
+      .select("address")
+      .eq("user_id", user.id)
+      .eq("asset", "BTC")
+      .eq("network", "mainnet")
       .single();
 
     if (walletError || !wallet) {
       return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: 'Bitcoin wallet not found. Please generate a wallet first.',
+        JSON.stringify({
+          success: false,
+          error: "Bitcoin wallet not found. Please generate a wallet first.",
           address: null,
         }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
     const address = wallet.address;
-    console.log(`🔍 Getting Bitcoin balance for address: ${address}`);
+    const balanceBTC = await tatumBtcAddressBalanceBtc(address);
 
-    // Get Bitcoin balance using Alchemy API
-    let balanceBTC = 0;
-    let utxos: any[] = [];
-
-    try {
-      // Get known transactions for this address from database
-      const { data: knownTransactions } = await supabase
-        .from('transactions')
-        .select('transaction_hash, crypto_amount, to_address, from_address')
-        .or(`to_address.eq.${address},from_address.eq.${address}`)
-        .eq('crypto_currency', 'BTC')
-        .order('created_at', { ascending: false })
-        .limit(200);
-
-      const processedTxids = new Set<string>();
-
-      // Calculate balance and get UTXOs by checking transactions
-      for (const dbTx of knownTransactions || []) {
-        if (!dbTx.transaction_hash || processedTxids.has(dbTx.transaction_hash)) continue;
-        processedTxids.add(dbTx.transaction_hash);
-
-        try {
-          // Get transaction details using getrawtransaction
-          const txResponse = await fetch(alchemyUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              method: 'getrawtransaction',
-              params: [dbTx.transaction_hash, true],
-              id: 1,
-            }),
-          });
-
-          if (txResponse.ok) {
-            const txData = await txResponse.json();
-            const tx = txData.result;
-            if (!tx || !tx.vout) continue;
-
-            // Check each output
-            for (let voutIndex = 0; voutIndex < tx.vout.length; voutIndex++) {
-              const output = tx.vout[voutIndex];
-              
-              if (output.scriptPubKey && output.scriptPubKey.addresses) {
-                const outputAddresses = output.scriptPubKey.addresses;
-                if (outputAddresses.includes(address)) {
-                  // Check if this output is still unspent using gettxout
-                  const txoutResponse = await fetch(alchemyUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      jsonrpc: '2.0',
-                      method: 'gettxout',
-                      params: [dbTx.transaction_hash, voutIndex],
-                      id: 2,
-                    }),
-                  });
-
-                  if (txoutResponse.ok) {
-                    const txoutData = await txoutResponse.json();
-                    // If gettxout returns a result, the output is unspent
-                    if (txoutData.result) {
-                      const amount = txoutData.result.value || output.value || 0;
-                      balanceBTC += amount;
-                      
-                      // Add to UTXOs
-                      utxos.push({
-                        txid: dbTx.transaction_hash,
-                        amount: amount,
-                        vout: voutIndex,
-                      });
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } catch (txError) {
-          console.warn(`Error checking transaction ${dbTx.transaction_hash}:`, txError);
-        }
-      }
-    } catch (error) {
-      console.warn('Could not get balance/UTXOs from Alchemy:', error);
+    let btcPriceUSD = await fetchBtcUsdFromLuno();
+    let btcPriceNGN = await fetchBtcNgnFromLuno();
+    if (btcPriceUSD <= 0 && btcPriceNGN > 0) {
+      const fx = await getUsdToNgnRate();
+      if (fx > 0) btcPriceUSD = btcPriceNGN / fx;
     }
+    if (btcPriceNGN <= 0 && btcPriceUSD > 0) {
+      btcPriceNGN = btcPriceUSD * (await getUsdToNgnRate());
+    }
+    if (btcPriceUSD <= 0) btcPriceUSD = 0;
+    if (btcPriceNGN <= 0) btcPriceNGN = 0;
 
-    // Get Bitcoin price for fiat conversion
-    // Fiat conversion via Alchemy (USD) + FX for NGN
-    const btcPriceUSD = await getBitcoinPrice('USD');
-    const btcPriceNGN = await getBitcoinPrice('NGN');
-
-    // Calculate fiat values
     const balanceUSD = balanceBTC * btcPriceUSD;
     const balanceNGN = balanceBTC * btcPriceNGN;
 
-    // Get balance from wallet_balances table (if exists)
     const { data: walletBalance } = await supabase
-      .from('wallet_balances')
-      .select('balance')
-      .eq('user_id', user.id)
-      .eq('currency', 'BTC')
+      .from("wallet_balances")
+      .select("balance")
+      .eq("user_id", user.id)
+      .eq("currency", "BTC")
       .single();
 
     return new Response(
@@ -185,46 +109,21 @@ serve(async (req) => {
           prices: {
             btc_usd: btcPriceUSD,
             btc_ngn: btcPriceNGN,
+            source: "luno",
           },
-          utxos: utxos.length,
+          utxos: 0,
           stored_balance: walletBalance?.balance || 0,
           lastUpdated: new Date().toISOString(),
         },
       }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
-  } catch (error: any) {
-    console.error('❌ Exception getting Bitcoin balance:', error);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("get-bitcoin-wallet-balance:", msg);
     return new Response(
-      JSON.stringify({
-        success: false,
-        error: error.message || 'Failed to get Bitcoin balance',
-      }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: false, error: msg || "Failed to get Bitcoin balance" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
-
-async function getBitcoinPrice(currency: string): Promise<number> {
-  const cur = currency.toUpperCase();
-  try {
-    const usd = await fetchAlchemyUsdForSymbol("BTC");
-    if (usd > 0) {
-      if (cur === "USD") return usd;
-      if (cur === "NGN") return usd * (await getUsdToNgnRate());
-    }
-  } catch (error) {
-    console.warn("Could not fetch Bitcoin price from Alchemy:", error);
-  }
-
-  const fallbackPrices: Record<string, number> = {
-    USD: 43000,
-    NGN: 70000000,
-  };
-
-  return fallbackPrices[cur] || 0;
-}
-
-
-
-

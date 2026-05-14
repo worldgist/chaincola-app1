@@ -6,6 +6,10 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoSellNotification } from "../_shared/send-crypto-sell-notification.ts";
 import { evaluateInstantSell } from "../_shared/treasury-trade-gates.ts";
+import {
+  getInstantSellOnChainTransferPlan,
+  mergeInstantSellOnChainIntoTransaction,
+} from "../_shared/instant-sell-onchain-transfer.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -18,14 +22,14 @@ const corsHeaders = {
 const MIN_SYSTEM_RESERVE = parseFloat(Deno.env.get('MIN_SYSTEM_RESERVE') || '1000000.00');
 const DEFAULT_FEE_PERCENTAGE = 0.01; // 1% default - overridden by admin app_settings
 
-// Static NGN rates per 1 unit of crypto (used when no admin override/frozen price)
-// Admin can set override_sell_price_ngn or frozen_sell_price_ngn in pricing_engine_config
+// Static NGN rates per 1 unit of crypto
 const STATIC_SELL_RATES_NGN: Record<string, number> = {
   'BTC': 70_000_000,
   'ETH': 4_000_000,
   'USDT': 1_650,
   'USDC': 1_650,
   'XRP': 1_000,
+  'SOL': 250_000,
 };
 
 serve(async (req) => {
@@ -103,49 +107,9 @@ serve(async (req) => {
 
     console.log(`💰 Instant sell request: User=${user.id}, Asset=${assetUpper}, Amount=${cryptoAmount}`);
 
-    // Get pricing engine configuration
-    let pricingConfig: any = null;
-    try {
-      const { data: configData, error: configError } = await supabase.rpc('get_pricing_engine_config', {
-        p_asset: assetUpper,
-      });
-      
-      if (!configError && configData && configData.length > 0) {
-        pricingConfig = configData[0];
-        
-        // Check if trading is enabled
-        if (!pricingConfig.trading_enabled) {
-          return new Response(
-            JSON.stringify({ 
-              success: false, 
-              error: `Trading is currently disabled for ${assetUpper}` 
-            }),
-            { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-      }
-    } catch (err) {
-      console.warn('⚠️ Error fetching pricing engine config:', err);
-    }
-
-    // Use static NGN rate only (no market/Luno API)
-    // Priority: admin override_sell_price_ngn > frozen_sell_price_ngn > static fallback
-    let rate = 0;
-    let rateSource = 'unknown';
-
-    if (pricingConfig?.override_sell_price_ngn) {
-      rate = parseFloat(pricingConfig.override_sell_price_ngn.toString());
-      rateSource = 'admin_override';
-      console.log(`📊 Using admin override sell price for ${assetUpper}: ₦${rate}`);
-    } else if (pricingConfig?.price_frozen && pricingConfig.frozen_sell_price_ngn) {
-      rate = parseFloat(pricingConfig.frozen_sell_price_ngn.toString());
-      rateSource = 'admin_frozen';
-      console.log(`📊 Using admin frozen sell price for ${assetUpper}: ₦${rate}`);
-    } else {
-      rate = STATIC_SELL_RATES_NGN[assetUpper] || 0;
-      rateSource = 'static';
-      console.log(`📊 Using static sell price for ${assetUpper}: ₦${rate}`);
-    }
+    let rate = STATIC_SELL_RATES_NGN[assetUpper] || 0;
+    const rateSource = 'static';
+    console.log(`📊 Using static sell price for ${assetUpper}: ₦${rate}`);
 
     if (!rate || rate <= 0) {
       return new Response(
@@ -178,7 +142,8 @@ serve(async (req) => {
     }
     console.log(`📊 Platform fee: ${(feePercentage * 100).toFixed(2)}%`);
 
-    // Call atomic sell function
+    // Call atomic sell RPC: validates balance, reserves amount on wallet_balances.locked (row locks),
+    // then credits NGN and books crypto into system_wallets (treasury) in one transaction.
     // Formula: NGN_before_fee = crypto_amount × rate; fee = NGN_before_fee × fee%; credit = NGN_before_fee - fee
     const { data: sellResult, error: sellError } = await supabase.rpc('instant_sell_crypto_v2', {
       p_user_id: user.id,
@@ -221,13 +186,38 @@ serve(async (req) => {
     }
 
     console.log(`✅ Instant sell successful: ${cryptoAmount} ${assetUpper} → ₦${result.ngn_amount.toFixed(2)}`);
-    console.log(`📊 System inventory updated: ${assetUpper} inventory increased by ${cryptoAmount}`);
+    console.log(`📊 Treasury booked (pending consumed first, remainder to ${assetUpper} inventory per RPC)`);
     console.log(`💰 System NGN float decreased by ₦${result.ngn_amount.toFixed(2)}`);
 
-    // Note: This is an internal ledger swap. No blockchain movement occurs.
-    // The crypto is added to system_wallets.{asset}_inventory (main wallet inventory)
-    // The NGN is deducted from system_wallets.ngn_float_balance
-    // Real crypto remains in the main wallet addresses configured in Treasury Settings
+    // Ledger leg is atomic in instant_sell_crypto_v2; on-chain custody context is attached below.
+    const balances = result.new_balances as Record<string, unknown> | null | undefined;
+    const transactionId =
+      balances && typeof balances.transaction_id === "string"
+        ? balances.transaction_id
+        : balances && typeof balances.transaction_id !== "undefined"
+        ? String(balances.transaction_id)
+        : null;
+
+    const onChainPlan = await getInstantSellOnChainTransferPlan(supabase, {
+      userId: user.id,
+      asset: assetUpper,
+      amountCrypto: cryptoAmount,
+    });
+
+    let transactionMetadataOnChainUpdated = false;
+    if (transactionId) {
+      const mergeRes = await mergeInstantSellOnChainIntoTransaction(
+        supabase,
+        transactionId,
+        onChainPlan,
+      );
+      transactionMetadataOnChainUpdated = mergeRes.ok;
+      if (!mergeRes.ok) {
+        console.warn("⚠️ Could not merge on-chain plan into transaction metadata:", mergeRes.error);
+      }
+    } else {
+      console.warn("⚠️ instant_sell_crypto_v2 returned no transaction_id in new_balances; run migration 20260518120000");
+    }
 
     // Send push notification
     try {
@@ -245,14 +235,40 @@ serve(async (req) => {
       // Don't fail the whole operation if notification fails
     }
 
-    // Return success response
+    // Return success response (single atomic DB transaction: lock reserve → NGN credit → treasury book → release lock)
     return new Response(
       JSON.stringify({
         success: true,
         ngn_amount: result.ngn_amount,
         new_balances: result.new_balances,
+        instant_settlement: {
+          ngn_credited_immediately: true,
+          user_balances_updated_immediately: true,
+          system_treasury_booked_immediately: true,
+          ledger_steps: [
+            "row_lock_user_wallets",
+            "row_lock_wallet_balances_asset",
+            "row_lock_system_wallets",
+            "reserve_sell_amount_on_wallet_balances_locked",
+            "debit_user_crypto_credit_user_ngn",
+            "book_crypto_to_system_wallets_pending_then_inventory",
+            "release_wallet_balances_locked_reserve",
+          ],
+          atomic_single_transaction: true,
+          on_chain_transfer: {
+            ledger_instant_complete: true,
+            custody_sweep: {
+              status: "documented",
+              plan: onChainPlan,
+              transaction_row_metadata_merged: transactionMetadataOnChainUpdated,
+              blockchain_broadcast_from_this_edge_function: false,
+              explanation:
+                "NGN and ledger treasury update are immediate. Moving coins on-chain from the user's deposit address to treasury main addresses is a separate sweep (auto-sweep-engine or send-* functions); see plan.sweep_recommended_functions.",
+            },
+          },
+        },
       }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
   } catch (error: any) {

@@ -161,8 +161,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const convertedUser = convertSupabaseUser(currentSession.user);
         setUser(convertedUser);
         
-        // Ensure user profile exists (but not during signup)
-        if (convertedUser && event !== 'SIGNED_UP') {
+        // Ensure user profile exists (but not during signup). Supabase typings omit legacy 'SIGNED_UP' in some versions.
+        if (convertedUser && (event as string) !== 'SIGNED_UP') {
           setTimeout(async () => {
             try {
               await ensureUserProfile(convertedUser);
@@ -264,16 +264,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (data.user) {
+        const newUserId = data.user.id;
         // Track this user ID FIRST to prevent onAuthStateChange from processing it
-        signupUserIdsRef.current.add(data.user.id);
+        signupUserIdsRef.current.add(newUserId);
         
         // Process referral if provided (after profile is created by trigger)
         if (metadata?.referralCode && metadata.referralCode.trim().length > 0) {
+          const referralCodeNormalized = metadata.referralCode.trim();
           // Wait for trigger to create profile, then process referral
           setTimeout(async () => {
             try {
               // First, validate the referral code to get the referrer's user ID
-              const validation = await validateReferralCode(metadata.referralCode.trim());
+              const validation = await validateReferralCode(referralCodeNormalized);
               if (!validation.isValid || !validation.userId) {
                 console.error('Invalid referral code during signup:', validation.error);
                 return;
@@ -282,8 +284,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               // Create referral relationship
               const { error: referralError } = await createReferralRelationship(
                 validation.userId, // Referrer's user ID (from validation)
-                data.user.id,      // Referred user ID (new user)
-                metadata.referralCode.trim().toUpperCase() // Referral code
+                newUserId, // Referred user ID (new user)
+                referralCodeNormalized.toUpperCase() // Referral code
               );
               
               if (referralError) {
@@ -356,8 +358,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const emailRedirectTo =
         typeof window !== 'undefined' ? `${window.location.origin}/auth/signin` : undefined;
+      // GoTrue `resend` only supports signup / email_change; recovery uses password reset email.
+      if (type === 'recovery') {
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: emailRedirectTo,
+        });
+        return { error: error ?? null };
+      }
       const { error } = await supabase.auth.resend({
-        type: type === 'recovery' ? 'recovery' : 'signup',
+        type: 'signup',
         email: email.trim(),
         ...(emailRedirectTo
           ? { options: { emailRedirectTo } }
@@ -376,17 +385,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const verifyOTP = async (email: string, token: string, type: 'signup' | 'email_change' | 'recovery') => {
     try {
-      // Map our type to Supabase type
-      let supabaseType: 'signup' | 'email_change' | 'recovery' = 'signup';
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedToken = token.trim();
+
+      // GoTrue: email OTP from "Confirm signup" uses verifyOtp type `email`, not `signup` (length set in Supabase Auth).
+      let supabaseType: 'email' | 'email_change' | 'recovery' = 'email';
       if (type === 'email_change') {
         supabaseType = 'email_change';
       } else if (type === 'recovery') {
         supabaseType = 'recovery';
+      } else {
+        supabaseType = 'email';
       }
 
       const { data, error } = await supabase.auth.verifyOtp({
-        email: email.trim(),
-        token: token.trim(),
+        email: normalizedEmail,
+        token: normalizedToken,
         type: supabaseType,
       });
 
@@ -394,24 +408,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { error };
       }
 
-      if (data.session && data.user) {
-        setSession(data.session);
-        const convertedUser = convertSupabaseUser(data.user);
-        setUser(convertedUser);
-        
-        // Remove from signup tracking since email is now verified
-        signupUserIdsRef.current.delete(data.user.id);
-        
-        // Ensure user profile exists after OTP verification
-        if (convertedUser) {
-          setTimeout(async () => {
-            try {
-              await ensureUserProfile(convertedUser);
-            } catch (error) {
-              console.error('Error ensuring user profile after OTP verification:', error);
-            }
-          }, 2000);
+      let activeSession = data.session ?? null;
+      let activeUser = data.user ?? null;
+
+      if (!activeSession) {
+        await new Promise((r) => setTimeout(r, 150));
+        const { data: refreshed, error: refreshErr } = await supabase.auth.getSession();
+        if (!refreshErr && refreshed.session) {
+          activeSession = refreshed.session;
+          activeUser = refreshed.session.user;
         }
+      }
+
+      if (!activeSession || !activeUser) {
+        return {
+          error: {
+            message:
+              'Verification succeeded but no session was created. Try again, or open the link in your email to continue.',
+          },
+        };
+      }
+
+      setSession(activeSession);
+      const convertedUser = convertSupabaseUser(activeUser);
+      setUser(convertedUser);
+
+      signupUserIdsRef.current.delete(activeUser.id);
+
+      if (convertedUser) {
+        setTimeout(async () => {
+          try {
+            await ensureUserProfile(convertedUser);
+          } catch (err) {
+            console.error('Error ensuring user profile after OTP verification:', err);
+          }
+        }, 2000);
       }
 
       return { error: null };

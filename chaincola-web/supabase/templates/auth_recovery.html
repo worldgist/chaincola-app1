@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reset your password</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; line-height: 1.5; color: #1a1a2e; max-width: 560px; margin: 0 auto; padding: 24px;">
+    <h1 style="font-size: 1.25rem;">Reset your password</h1>
+    <p>Hi,</p>
+    <p>We received a request to reset the password for <strong>{{ .Email }}</strong>.</p>
+    <p>Your one-time code is:</p>
+    <p style="font-size: 1.75rem; letter-spacing: 0.25em; font-weight: 700;">{{ .Token }}</p>
+    <p>Or use this link (valid once):</p>
+    <p><a href="{{ .ConfirmationURL }}">Reset password</a></p>
+    <p style="font-size: 0.875rem; color: #555;">If you did not request this, you can ignore this email.</p>
+  </body>
+</html>

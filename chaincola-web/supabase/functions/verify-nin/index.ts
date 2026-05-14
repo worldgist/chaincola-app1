@@ -11,8 +11,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Flutterwave API base URL
-const FLUTTERWAVE_API_BASE = Deno.env.get('FLUTTERWAVE_API_BASE') || 'https://api.flutterwave.com/v3';
+/** v3 API root only (no `/kyc` suffix). Override with FLUTTERWAVE_API_BASE if needed. */
+function flutterwaveV3Base(): string {
+  const raw = (Deno.env.get('FLUTTERWAVE_API_BASE') || 'https://api.flutterwave.com/v3').trim();
+  let base = raw.replace(/\/+$/, '');
+  // Avoid doubled paths if someone set .../v3/kyc
+  base = base.replace(/\/kyc\/?$/i, '');
+  return base || 'https://api.flutterwave.com/v3';
+}
+
+function flutterwaveV2ResolveHost(secretKey: string): string {
+  if (/TEST|sandbox/i.test(secretKey)) {
+    return 'https://ravesandboxapi.flutterwave.com';
+  }
+  return 'https://api.flutterwave.com';
+}
 
 interface VerifyNINRequest {
   nin?: string;
@@ -23,34 +36,114 @@ interface VerifyNINRequest {
   date_of_birth?: string; // Format: YYYY-MM-DD
 }
 
+interface FlutterwaveBVNData {
+  bvn: string;
+  first_name: string;
+  last_name: string;
+  middle_name?: string;
+  account_number?: string;
+  bank_code?: string;
+  phone_number?: string;
+  registration_date?: string;
+  enrollment_bank?: string;
+  enrollment_branch?: string;
+  image?: string;
+  email?: string;
+  level_of_account?: string;
+  lga_of_origin?: string;
+  lga_of_residence?: string;
+  marital_status?: string;
+  name_on_card?: string;
+  nationality?: string;
+  nin?: string;
+  state_of_origin?: string;
+  state_of_residence?: string;
+  watch_listed?: string;
+  date_of_birth?: string;
+}
+
 interface FlutterwaveBVNResponse {
   status: string;
   message: string;
-  data: {
-    bvn: string;
-    first_name: string;
-    last_name: string;
-    middle_name?: string;
-    account_number?: string;
-    bank_code?: string;
-    phone_number?: string;
-    registration_date?: string;
-    enrollment_bank?: string;
-    enrollment_branch?: string;
-    image?: string;
-    email?: string;
-    level_of_account?: string;
-    lga_of_origin?: string;
-    lga_of_residence?: string;
-    marital_status?: string;
-    name_on_card?: string;
-    nationality?: string;
-    nin?: string; // BVN data may include NIN
-    state_of_origin?: string;
-    state_of_residence?: string;
-    watch_listed?: string;
-    date_of_birth?: string;
+  data: FlutterwaveBVNData;
+}
+
+function fwTopLevelMessage(parsed: Record<string, unknown>): string {
+  const m = parsed.message;
+  if (typeof m === 'string') return m;
+  if (Array.isArray(m)) return m.map(String).join(' ');
+  const d = parsed.data;
+  if (d && typeof d === 'object' && 'message' in d && typeof (d as { message?: string }).message === 'string') {
+    return (d as { message: string }).message;
+  }
+  return '';
+}
+
+/** v2 `data` object or v3 nested `data.bvn_data` → unified shape for DB insert */
+function extractBvnDataFromFlutterwaveJson(
+  parsed: Record<string, unknown>,
+  fallbackBvn: string,
+): FlutterwaveBVNData | null {
+  if (parsed.status !== 'success' || parsed.data == null) return null;
+  const d = parsed.data as Record<string, unknown>;
+
+  const fromFlat = (): FlutterwaveBVNData | null => {
+    const fn = (d.first_name ?? d.firstName) as string | undefined;
+    const ln = (d.last_name ?? d.lastName ?? d.surname) as string | undefined;
+    if (fn == null && ln == null) return null;
+    return {
+      bvn: String(d.bvn ?? fallbackBvn),
+      first_name: String(fn ?? '').trim() || 'Unknown',
+      last_name: String(ln ?? '').trim() || 'Unknown',
+      middle_name: (d.middle_name ?? d.middleName) as string | undefined,
+      account_number: d.account_number as string | undefined,
+      bank_code: d.bank_code as string | undefined,
+      phone_number: (d.phone_number ?? d.phoneNumber2 ?? d.phoneNumber1) as string | undefined,
+      registration_date: d.registration_date as string | undefined,
+      enrollment_bank: d.enrollment_bank as string | undefined,
+      enrollment_branch: d.enrollment_branch as string | undefined,
+      image: d.image as string | undefined,
+      email: d.email as string | undefined,
+      level_of_account: d.level_of_account as string | undefined,
+      lga_of_origin: d.lga_of_origin as string | undefined,
+      lga_of_residence: d.lga_of_residence as string | undefined,
+      marital_status: d.marital_status as string | undefined,
+      name_on_card: d.name_on_card as string | undefined,
+      nationality: d.nationality as string | undefined,
+      nin: (d.nin as string | undefined)?.replace(/\s/g, ''),
+      state_of_origin: d.state_of_origin as string | undefined,
+      state_of_residence: d.state_of_residence as string | undefined,
+      watch_listed: (d.watch_listed ?? d.watchlisted) as string | undefined,
+      date_of_birth: (d.date_of_birth ?? d.dateOfBirth) as string | undefined,
+    };
   };
+
+  const bvnData = d.bvn_data as Record<string, unknown> | undefined;
+  if (bvnData && typeof bvnData === 'object') {
+    const fn = (bvnData.firstName ?? bvnData.first_name) as string | undefined;
+    const ln = (bvnData.surname ?? bvnData.last_name ?? bvnData.lastName) as string | undefined;
+    if (!fn && !ln) return fromFlat();
+    return {
+      bvn: String(bvnData.bvn ?? fallbackBvn),
+      first_name: String(fn ?? '').trim() || 'Unknown',
+      last_name: String(ln ?? '').trim() || 'Unknown',
+      middle_name: (bvnData.middleName ?? bvnData.middle_name) as string | undefined,
+      phone_number: (bvnData.phoneNumber2 ?? bvnData.phoneNumber1 ?? bvnData.phone_number) as string | undefined,
+      email: bvnData.email as string | undefined,
+      nin: typeof bvnData.nin === 'string' ? bvnData.nin.replace(/\s/g, '') : undefined,
+      date_of_birth: (bvnData.dateOfBirth ?? bvnData.date_of_birth) as string | undefined,
+      enrollment_bank: (bvnData.enrollBankCode ?? bvnData.enrollment_bank) as string | undefined,
+      state_of_origin: bvnData.stateOfOrigin as string | undefined,
+      state_of_residence: bvnData.stateOfResidence as string | undefined,
+      lga_of_origin: bvnData.lgaOfOrigin as string | undefined,
+      lga_of_residence: bvnData.lgaOfResidence as string | undefined,
+      marital_status: bvnData.maritalStatus as string | undefined,
+      nationality: bvnData.nationality as string | undefined,
+      watch_listed: bvnData.watchlisted as string | undefined,
+    };
+  }
+
+  return fromFlat();
 }
 
 serve(async (req) => {
@@ -190,132 +283,155 @@ serve(async (req) => {
 
     console.log(`🔍 Verifying ${verificationType}: ${verificationNumber.substring(0, 4)}****`);
 
-    // Call Flutterwave BVN Verification API (v2 endpoint)
-    // Note: v3 requires customer consent flow, v2 is simpler for backend verification
-    const verifyUrl = `${FLUTTERWAVE_API_BASE}/kyc/bvn/${verificationNumber}?bvn=${verificationNumber}`;
-    
-    const flutterwaveResponse = await fetch(verifyUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${flutterwaveSecretKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    const v3Base = flutterwaveV3Base();
+    const bearerHeaders = {
+      Authorization: `Bearer ${flutterwaveSecretKey}`,
+      'Content-Type': 'application/json',
+    } as const;
 
-    if (!flutterwaveResponse.ok) {
-      const errorText = await flutterwaveResponse.text();
-      let errorData;
+    const v2HostPrimary = flutterwaveV2ResolveHost(flutterwaveSecretKey);
+    const attempts: Array<{ label: string; url: string; headers: Record<string, string> }> = [
+      {
+        label: 'v2-seckey',
+        url: `${v2HostPrimary}/v2/kyc/bvn/${verificationNumber}?seckey=${encodeURIComponent(flutterwaveSecretKey)}`,
+        headers: { 'Content-Type': 'application/json' },
+      },
+      {
+        label: 'v2-seckey-ravepay',
+        url: `https://api.ravepay.co/v2/kyc/bvn/${verificationNumber}?seckey=${encodeURIComponent(flutterwaveSecretKey)}`,
+        headers: { 'Content-Type': 'application/json' },
+      },
+      {
+        label: 'v3-bearer-bvns',
+        url: `${v3Base}/kyc/bvns/${verificationNumber}`,
+        headers: { ...bearerHeaders },
+      },
+    ];
+
+    let result: FlutterwaveBVNResponse | null = null;
+    let lastMessage = '';
+    let lastHttp = 400;
+
+    for (const { label, url, headers } of attempts) {
+      const res = await fetch(url, { method: 'GET', headers });
+      lastHttp = res.status;
+      const text = await res.text();
+      let parsed: Record<string, unknown>;
       try {
-        errorData = JSON.parse(errorText);
+        parsed = JSON.parse(text) as Record<string, unknown>;
       } catch {
-        errorData = { message: errorText };
+        lastMessage = text.slice(0, 240) || `Invalid response (${res.status})`;
+        console.warn(`verify-nin ${label}: non-JSON HTTP ${res.status}`);
+        continue;
       }
 
-      console.error(`❌ Flutterwave ${verificationType} verification failed:`, errorData);
-      
+      const extracted = extractBvnDataFromFlutterwaveJson(parsed, verificationNumber);
+      if (extracted) {
+        result = {
+          status: 'success',
+          message: typeof parsed.message === 'string' ? parsed.message : 'BVN resolved',
+          data: extracted,
+        };
+        console.log(`verify-nin OK via ${label}`);
+        break;
+      }
+
+      lastMessage = fwTopLevelMessage(parsed) || lastMessage || `HTTP ${res.status}`;
+      console.warn(`verify-nin ${label}: ${lastMessage}`);
+    }
+
+    if (!result || result.status !== 'success' || !result.data) {
+      const hint =
+        'Ensure your Flutterwave wallet is funded (BVN lookup is paid), the secret key matches live vs test, and BVN resolution is enabled on your Flutterwave account. If it persists, contact Flutterwave support.';
       return new Response(
         JSON.stringify({
           status: 'error',
-          message: errorData.message || `Failed to verify ${verificationType}. Please check the number and try again.`,
+          message: lastMessage || `Failed to verify ${verificationType}.`,
+          hint,
         }),
         {
-          status: flutterwaveResponse.status,
+          status: lastHttp >= 400 ? lastHttp : 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
-    const result: FlutterwaveBVNResponse = await flutterwaveResponse.json();
+    console.log(`✅ ${verificationType} verified: ${result.data.first_name} ${result.data.last_name}`);
 
-    if (result.status === 'success' && result.data) {
-      console.log(`✅ ${verificationType} verified: ${result.data.first_name} ${result.data.last_name}`);
+    // Store verification result in account_verifications and update user_profiles
+    const fullName = [result.data.first_name, result.data.middle_name, result.data.last_name]
+      .filter(Boolean).join(' ').trim() || `${result.data.first_name} ${result.data.last_name}`.trim();
+    const phoneNumber = result.data.phone_number || '';
 
-      // Store verification result in account_verifications and update user_profiles
-      const fullName = [result.data.first_name, result.data.middle_name, result.data.last_name]
-        .filter(Boolean).join(' ').trim() || `${result.data.first_name} ${result.data.last_name}`.trim();
-      const phoneNumber = result.data.phone_number || '';
+    try {
+      // Delete any existing pending verification for this user
+      await supabase
+        .from('account_verifications')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('status', 'pending');
 
-      try {
-        // Delete any existing pending verification for this user
+      // Insert new verification as approved (Flutterwave verified)
+      const { error: insertError } = await supabase
+        .from('account_verifications')
+        .insert({
+          user_id: user.id,
+          full_name: fullName,
+          phone_number: phoneNumber,
+          address: '',
+          nin: nin || result.data.nin || null,
+          nin_front_url: null,
+          nin_back_url: null,
+          passport_photo_url: null,
+          status: 'approved',
+          submitted_at: new Date().toISOString(),
+          reviewed_at: new Date().toISOString(),
+        });
+
+      if (insertError) {
+        console.error('❌ Error storing verification result:', insertError);
+      } else {
+        // Update user_profiles verification_status to approved
         await supabase
-          .from('account_verifications')
-          .delete()
-          .eq('user_id', user.id)
-          .eq('status', 'pending');
-
-        // Insert new verification as approved (Flutterwave verified)
-        const { error: insertError } = await supabase
-          .from('account_verifications')
-          .insert({
-            user_id: user.id,
+          .from('user_profiles')
+          .update({
+            verification_status: 'approved',
             full_name: fullName,
-            phone_number: phoneNumber,
-            address: '',
-            nin: nin || result.data.nin || null,
-            nin_front_url: null,
-            nin_back_url: null,
-            passport_photo_url: null,
-            status: 'approved',
-            submitted_at: new Date().toISOString(),
-            reviewed_at: new Date().toISOString(),
-          });
-
-        if (insertError) {
-          console.error('❌ Error storing verification result:', insertError);
-        } else {
-          // Update user_profiles verification_status to approved
-          await supabase
-            .from('user_profiles')
-            .update({
-              verification_status: 'approved',
-              full_name: fullName,
-              phone_number: phoneNumber || undefined,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', user.id);
-        }
-      } catch (dbError) {
-        console.error('❌ Exception storing verification result:', dbError);
+            phone_number: phoneNumber || undefined,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.id);
       }
-
-      return new Response(
-        JSON.stringify({
-          status: 'success',
-          verified: true,
-          verification_type: verificationType,
-          data: {
-            first_name: result.data.first_name,
-            last_name: result.data.last_name,
-            middle_name: result.data.middle_name,
-            phone_number: result.data.phone_number,
-            email: result.data.email,
-            date_of_birth: result.data.date_of_birth,
-            nin: result.data.nin || nin,
-            bvn: result.data.bvn || bvn,
-            enrollment_bank: result.data.enrollment_bank,
-            state_of_origin: result.data.state_of_origin,
-            state_of_residence: result.data.state_of_residence,
-            lga_of_origin: result.data.lga_of_origin,
-            lga_of_residence: result.data.lga_of_residence,
-            marital_status: result.data.marital_status,
-            nationality: result.data.nationality,
-            watch_listed: result.data.watch_listed,
-          },
-        }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
+    } catch (dbError) {
+      console.error('❌ Exception storing verification result:', dbError);
     }
 
     return new Response(
       JSON.stringify({
-        status: 'error',
-        message: result.message || `Invalid response from ${verificationType} verification service`,
+        status: 'success',
+        verified: true,
+        verification_type: verificationType,
+        data: {
+          first_name: result.data.first_name,
+          last_name: result.data.last_name,
+          middle_name: result.data.middle_name,
+          phone_number: result.data.phone_number,
+          email: result.data.email,
+          date_of_birth: result.data.date_of_birth,
+          nin: result.data.nin || nin,
+          bvn: result.data.bvn || bvn,
+          enrollment_bank: result.data.enrollment_bank,
+          state_of_origin: result.data.state_of_origin,
+          state_of_residence: result.data.state_of_residence,
+          lga_of_origin: result.data.lga_of_origin,
+          lga_of_residence: result.data.lga_of_residence,
+          marital_status: result.data.marital_status,
+          nationality: result.data.nationality,
+          watch_listed: result.data.watch_listed,
+        },
       }),
       {
-        status: 400,
+        status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       }
     );

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Verify Your Email - Chaincola</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f7; font-family:Arial, sans-serif;">
+  <!-- Supabase: this HTML is used only when Send Email hook is OFF. If the hook is ON, merge email_data.token in your hook instead. -->
+
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f7; padding:30px 0;">
+    <tr>
+      <td align="center">
+
+        <table width="600" cellpadding="0" cellspacing="0" border="0"
+          style="background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 4px 15px rgba(0,0,0,0.08);">
+
+          <tr>
+            <td align="center"
+              style="background:linear-gradient(135deg, #6a11cb, #8e2de2); padding:40px 20px;">
+
+              <h1 style="color:#ffffff; margin:0; font-size:30px;">
+                Chaincola
+              </h1>
+
+              <p style="color:#f3e8ff; margin-top:10px; font-size:16px;">
+                Verify Your Email Address
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:40px 35px; color:#333333;">
+
+              <h2 style="margin-top:0; color:#5b21b6; font-size:24px;">
+                Welcome to Chaincola
+              </h2>
+
+              <p style="font-size:16px; line-height:1.7; color:#555555;">
+                Thank you for creating your Chaincola account.
+                Please verify your email address using the verification code below.
+              </p>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:30px 0;">
+                <tr>
+                  <td align="center">
+                    <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="margin:0 auto;">
+                      <tr>
+                        <td align="center" style="
+                          background-color:#f3e8ff;
+                          color:#6b21a8;
+                          font-size:36px;
+                          font-weight:bold;
+                          letter-spacing:12px;
+                          padding:18px 35px;
+                          border-radius:12px;
+                          border:2px dashed #8b5cf6;
+                          font-family:Courier New, Courier, monospace;
+                        ">
+                          {{ .Token }}
+                        </td>
+                      </tr>
+                    </table>
+                    <p style="margin:16px 0 0; font-size:16px; color:#333333; font-family:Arial, sans-serif;">
+                      Your verification code: <strong style="letter-spacing:0.2em;">{{ .Token }}</strong>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:35px 0;">
+                <tr>
+                  <td align="center">
+
+                    <a href="{{ .ConfirmationURL }}"
+                      style="
+                        background:linear-gradient(135deg, #6a11cb, #8e2de2);
+                        color:#ffffff;
+                        text-decoration:none;
+                        padding:15px 35px;
+                        border-radius:10px;
+                        font-size:16px;
+                        font-weight:bold;
+                        display:inline-block;
+                      ">
+                      Verify Email
+                    </a>
+
+                  </td>
+                </tr>
+              </table>
+
+              <p style="font-size:15px; line-height:1.7; color:#666666;">
+                If the button above does not work, copy and paste the link below into your browser:
+              </p>
+
+              <p style="word-break:break-all; font-size:14px; color:#7c3aed;">
+                {{ .ConfirmationURL }}
+              </p>
+
+              <p style="font-size:15px; line-height:1.7; color:#666666;">
+                If you did not create a Chaincola account, you can safely ignore this email.
+              </p>
+
+            </td>
+          </tr>
+
+          <tr>
+            <td align="center"
+              style="padding:25px; background-color:#faf5ff; color:#888888; font-size:13px;">
+
+              &copy; 2026 Chaincola. All rights reserved.
+
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

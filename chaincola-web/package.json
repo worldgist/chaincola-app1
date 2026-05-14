@@ -15,11 +15,13 @@
     "correct-ngn-balance": "node scripts/correct-ngn-balance.js",
     "test-sell-crypto": "node scripts/test-sell-crypto.js",
     "supabase:types": "supabase gen types typescript --linked > lib/supabase/database.types.ts",
+    "supabase:config-push": "supabase config push",
     "import-users": "node scripts/import-users.js",
     "migrate:supabase": "node scripts/migrate-supabase-old-to-new.js",
     "migrate:supabase:all": "node scripts/migrate-supabase-old-to-new.js --everything --passes=2",
     "deploy:functions": "node scripts/deploy-all-edge-functions.js",
-    "deploy:functions:dry-run": "node scripts/deploy-all-edge-functions.js --dry-run"
+    "deploy:functions:dry-run": "node scripts/deploy-all-edge-functions.js --dry-run",
+    "vercel:deploy": "vercel deploy --prod"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
@@ -34,7 +36,7 @@
     "ecpair": "^2.1.0",
     "ed25519-hd-key": "^1.3.0",
     "ethers": "^6.16.0",
-    "next": "^16.1.0",
+    "next": "16.2.4",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "ripple-address-codec": "^5.0.0",
@@ -50,7 +52,7 @@
     "@types/react-dom": "^19",
     "dotenv": "^17.2.3",
     "eslint": "^9",
-    "eslint-config-next": "16.0.7",
+    "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
     "typescript": "^5"
   },

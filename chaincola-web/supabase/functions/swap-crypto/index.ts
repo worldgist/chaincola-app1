@@ -13,6 +13,38 @@ const corsHeaders = {
 const SWAP_FEE_PERCENTAGE = 0.005; // 0.5% swap fee
 const MIN_SYSTEM_RESERVE = parseFloat(Deno.env.get('MIN_SYSTEM_RESERVE') || '1000000.00');
 
+/** NGN per 1 unit when `crypto_prices` has no row */
+const STATIC_SWAP_RATES_NGN: Record<string, number> = {
+  BTC: 70_000_000,
+  ETH: 4_000_000,
+  USDT: 1_650,
+  USDC: 1_650,
+  XRP: 1_000,
+  SOL: 250_000,
+};
+
+function ngnSellFromRow(
+  row: { price_ngn?: unknown; bid?: unknown } | null,
+  assetUpper: string,
+): number {
+  const bid = Number(row?.bid);
+  const mid = Number(row?.price_ngn);
+  if (bid > 0) return bid;
+  if (mid > 0) return mid;
+  return STATIC_SWAP_RATES_NGN[assetUpper] ?? 0;
+}
+
+function ngnBuyFromRow(
+  row: { price_ngn?: unknown; ask?: unknown } | null,
+  assetUpper: string,
+): number {
+  const ask = Number(row?.ask);
+  const mid = Number(row?.price_ngn);
+  if (ask > 0) return ask;
+  if (mid > 0) return mid;
+  return STATIC_SWAP_RATES_NGN[assetUpper] ?? 0;
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -74,99 +106,33 @@ serve(async (req) => {
     const fromAssetUpper = from_asset.toUpperCase();
     const toAssetUpper = to_asset.toUpperCase();
 
-    // Get pricing from pricing engine
     let fromSellPrice = 0;
     let toBuyPrice = 0;
-    let rateSource = 'unknown';
+    let rateSource = '';
 
     try {
-      // Get pricing config for from_asset (sell price)
-      const { data: fromPricingConfig, error: fromPricingError } = await supabase
-        .from('pricing_engine_config')
-        .select('*')
-        .eq('asset', fromAssetUpper)
-        .single();
-
-      // Get pricing config for to_asset (buy price)
-      const { data: toPricingConfig, error: toPricingError } = await supabase
-        .from('pricing_engine_config')
-        .select('*')
-        .eq('asset', toAssetUpper)
-        .single();
-
-      // Get market prices from crypto_prices table
       const { data: fromPriceData } = await supabase
         .from('crypto_prices')
         .select('price_ngn, bid')
         .eq('crypto_symbol', fromAssetUpper)
-        .single();
+        .maybeSingle();
 
       const { data: toPriceData } = await supabase
         .from('crypto_prices')
         .select('price_ngn, ask')
         .eq('crypto_symbol', toAssetUpper)
-        .single();
+        .maybeSingle();
 
-      // Calculate sell price for from_asset
-      if (fromPricingConfig) {
-        if (fromPricingConfig.override_sell_price_ngn) {
-          fromSellPrice = parseFloat(fromPricingConfig.override_sell_price_ngn.toString());
-          rateSource = 'override-sell';
-        } else if (fromPricingConfig.price_frozen && fromPricingConfig.frozen_sell_price_ngn) {
-          fromSellPrice = parseFloat(fromPricingConfig.frozen_sell_price_ngn.toString());
-          rateSource = 'frozen-sell';
-        } else {
-          fromSellPrice = fromPriceData?.bid || fromPriceData?.price_ngn || 0;
-          rateSource = 'market-sell';
-        }
-      } else {
-        // Fallback to market price
-        fromSellPrice = fromPriceData?.bid || fromPriceData?.price_ngn || 0;
-        rateSource = 'market-sell';
-      }
+      fromSellPrice = ngnSellFromRow(fromPriceData, fromAssetUpper);
+      toBuyPrice = ngnBuyFromRow(toPriceData, toAssetUpper);
 
-      // Calculate buy price for to_asset
-      if (toPricingConfig) {
-        if (toPricingConfig.override_buy_price_ngn) {
-          toBuyPrice = parseFloat(toPricingConfig.override_buy_price_ngn.toString());
-          rateSource += '-override-buy';
-        } else if (toPricingConfig.price_frozen && toPricingConfig.frozen_buy_price_ngn) {
-          toBuyPrice = parseFloat(toPricingConfig.frozen_buy_price_ngn.toString());
-          rateSource += '-frozen-buy';
-        } else {
-          toBuyPrice = toPriceData?.ask || toPriceData?.price_ngn || 0;
-          rateSource += '-market-buy';
-        }
-      } else {
-        // Fallback to market price
-        toBuyPrice = toPriceData?.ask || toPriceData?.price_ngn || 0;
-        rateSource += '-market-buy';
-      }
-
-      // Fallback to hardcoded prices if pricing engine fails
-      if (!fromSellPrice || fromSellPrice <= 0) {
-        const fallbackPrices: Record<string, number> = {
-          'BTC': 95000000,
-          'ETH': 3500000,
-          'USDT': 1650,
-          'USDC': 1650,
-          'XRP': 1000,
-        };
-        fromSellPrice = fallbackPrices[fromAssetUpper] || 0;
-        rateSource = 'fallback-sell';
-      }
-
-      if (!toBuyPrice || toBuyPrice <= 0) {
-        const fallbackPrices: Record<string, number> = {
-          'BTC': 95000000,
-          'ETH': 3500000,
-          'USDT': 1650,
-          'USDC': 1650,
-          'XRP': 1000,
-        };
-        toBuyPrice = fallbackPrices[toAssetUpper] || 0;
-        rateSource += '-fallback-buy';
-      }
+      const fromLive =
+        fromPriceData &&
+        (Number(fromPriceData.bid) > 0 || Number(fromPriceData.price_ngn) > 0);
+      const toLive =
+        toPriceData &&
+        (Number(toPriceData.ask) > 0 || Number(toPriceData.price_ngn) > 0);
+      rateSource = `${fromLive ? 'crypto_prices' : 'static'}_sell+${toLive ? 'crypto_prices' : 'static'}_buy`;
     } catch (pricingError) {
       console.error('Error fetching prices:', pricingError);
       return new Response(

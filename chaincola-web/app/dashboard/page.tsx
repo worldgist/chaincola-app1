@@ -8,7 +8,7 @@ import { getUserProfile, UserProfile } from '@/lib/user-service';
 import { getWalletBalances, formatBalance } from '@/lib/wallet-service';
 import { getUserCryptoBalances } from '@/lib/crypto-price-service';
 import { getUserVerificationStatus } from '@/lib/verification-service';
-import VerificationGuard from '../components/VerificationGuard';
+import VerificationGuard from '@/components/VerificationGuard';
 import Navbar from '../components/Navbar';
 import BottomTabBar from '../components/BottomTabBar';
 
@@ -133,12 +133,12 @@ export default function DashboardPage() {
 
   const getUserName = () => {
     if (userProfile?.name || userProfile?.full_name) {
-      const fullName = userProfile.name || userProfile.full_name;
-      return fullName.trim().split(' ')[0];
+      const fullName = (userProfile.name || userProfile.full_name || '').trim();
+      if (fullName) return fullName.split(' ')[0];
     }
     if (user?.metadata?.full_name || user?.metadata?.name) {
-      const fullName = user.metadata.full_name || user.metadata.name;
-      return fullName.trim().split(' ')[0];
+      const fullName = (user.metadata.full_name || user.metadata.name || '').trim();
+      if (fullName) return fullName.split(' ')[0];
     }
     if (user?.email) {
       return user.email.split('@')[0];

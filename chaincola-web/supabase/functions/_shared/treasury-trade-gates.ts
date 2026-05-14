@@ -13,7 +13,7 @@ const DEFAULT_ASSET_FLAGS: Record<string, boolean> = {
   SOL: true,
 };
 
-/** Defaults aligned with admin-treasury getRiskSettings. */
+/** Defaults aligned with `app_settings.additional_settings.risk_settings` (legacy admin risk JSON). */
 const DEFAULT_MAX_SELL_LIMITS: Record<string, number> = {
   BTC: 0.1,
   ETH: 1.0,

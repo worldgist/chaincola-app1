@@ -44,7 +44,7 @@ serve(async (req) => {
       
       if (!authError && user) {
         // Check if user is admin
-        const { data: adminCheck } = await supabase.rpc('is_user_admin', { user_id: user.id });
+        const { data: adminCheck } = await supabase.rpc('is_user_admin', { check_user_id: user.id });
         if (!adminCheck) {
           return new Response(
             JSON.stringify({ success: false, error: 'Unauthorized: Admin access required' }),
