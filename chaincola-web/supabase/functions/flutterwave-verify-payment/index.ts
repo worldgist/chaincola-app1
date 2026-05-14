@@ -184,8 +184,8 @@ serve(async (req) => {
     }
 
     // Call Flutterwave API to verify payment
-    const verifyUrl = `${FLUTTERWAVE_API_BASE}/transactions/verify_by_reference?tx_ref=${tx_ref}`;
-    
+    const verifyUrl = `${FLUTTERWAVE_API_BASE}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(tx_ref)}`;
+
     const flutterwaveResponse = await fetch(verifyUrl, {
       method: 'GET',
       headers: {
@@ -196,18 +196,47 @@ serve(async (req) => {
 
     if (!flutterwaveResponse.ok) {
       const errorText = await flutterwaveResponse.text();
-      console.error('❌ Flutterwave API error:', flutterwaveResponse.status, errorText);
-      
+      console.warn('⚠️ Flutterwave verify HTTP:', flutterwaveResponse.status, errorText.slice(0, 500));
+
+      let fwMessage = `Flutterwave returned HTTP ${flutterwaveResponse.status}`;
+      try {
+        const j = JSON.parse(errorText) as { message?: string; status?: string };
+        if (typeof j?.message === 'string' && j.message.trim()) fwMessage = j.message.trim();
+      } catch {
+        if (errorText.trim()) fwMessage = errorText.trim().slice(0, 300);
+      }
+
+      // FW commonly returns 400/404 when the customer never completed checkout or the ref is unknown.
+      // Return 200 + verified:false so app polling does not treat this as a transport error.
+      if (flutterwaveResponse.status === 400 || flutterwaveResponse.status === 404) {
+        const pendingHint =
+          'No completed payment found for this reference yet. If you already paid, wait a minute and pull to refresh; otherwise start a new deposit from Fund wallet.';
+        return new Response(
+          JSON.stringify({
+            success: true,
+            verified: false,
+            transaction_id: transaction.id,
+            amount: transaction.fiat_amount,
+            status: 'PENDING',
+            error: `${pendingHint} (${fwMessage})`,
+          }),
+          {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          },
+        );
+      }
+
       return new Response(
         JSON.stringify({
           success: false,
           verified: false,
-          error: `Flutterwave API error: ${flutterwaveResponse.status}`,
+          error: fwMessage,
         }),
         {
-          status: flutterwaveResponse.status,
+          status: 502,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 

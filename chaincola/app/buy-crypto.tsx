@@ -24,7 +24,7 @@ import {
   getDisplayBuyRateNgnPerUsd,
 } from '@/lib/crypto-price-service';
 import { getNgnBalance } from '@/lib/wallet-service';
-import { instantBuyCrypto, isTreasuryInventoryShortageError } from '@/lib/buy-sell-service';
+import { instantBuyCrypto, isTreasuryInventoryShortageError, humanizeInstantBuyNetworkError } from '@/lib/buy-sell-service';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
 import AppLoadingIndicator from '@/components/app-loading-indicator';
 
@@ -43,6 +43,19 @@ try {
   nairaLogo = require('@/assets/images/naira.png');
 } catch {
   nairaLogo = null;
+}
+
+/** Clear copy when Edge returns insufficient system_* inventory (amounts parsed from API text when present). */
+function treasuryInventoryBuyUserMessage(symbol: string, apiError: string): string {
+  const avail = apiError.match(/Available:\s*([\d.,]+)\s*(\w+)/i);
+  const req = apiError.match(/Requested:\s*([\d.,]+)\s*(\w+)/i);
+  const intro = `${symbol} instant buy pulls from the platform treasury (hot ledger), not an on-chain transfer. There is not enough of this asset on the books for this order.`;
+  if (avail && req) {
+    return (
+      `${intro}\n\n• Treasury has about ${avail[1]} ${avail[2]}\n• Your order needs about ${req[1]} ${req[2]}\n\nTry a smaller NGN amount, choose another asset, or ask an admin to add inventory in Admin → Wallet management → System wallets → Fund system ledger.`
+    );
+  }
+  return `${intro} Try a smaller amount or contact support.`;
 }
 
 export default function BuyCryptoScreen() {
@@ -134,7 +147,7 @@ export default function BuyCryptoScreen() {
         setBuyRatePerUsdNgn(null);
         return;
       }
-      const buyRateNgn = price.price_ngn ?? price.ask ?? 0;
+      const buyRateNgn = price.ask ?? price.price_ngn ?? 0;
       if (buyRateNgn > 0) {
         setExchangeRate(buyRateNgn);
         setPriceError(null);
@@ -238,26 +251,24 @@ export default function BuyCryptoScreen() {
       } else {
         const err = result.error || 'Failed to execute buy';
         if (isTreasuryInventoryShortageError(err)) {
-          Alert.alert(
-            'Temporarily unavailable',
-            `${selectedCrypto.symbol} instant buy uses platform inventory, and there is not enough of this asset available right now. Try another coin, try again later, or contact support if this keeps happening.`,
-          );
+          Alert.alert('Temporarily unavailable', treasuryInventoryBuyUserMessage(selectedCrypto.symbol, err));
         } else if (err.toLowerCase().includes('insufficient')) {
           await fetchBalance();
           setShowInsufficientBalanceModal(true);
+        } else if (err.includes('Could not reach ChainCola')) {
+          Alert.alert('Connection problem', err);
         } else {
           Alert.alert('Error', err);
         }
       }
     } catch (error: any) {
-      const err = error.message || 'Failed to execute buy';
+      const err = humanizeInstantBuyNetworkError(error);
       if (isTreasuryInventoryShortageError(err)) {
-        Alert.alert(
-          'Temporarily unavailable',
-          `${selectedCrypto.symbol} instant buy uses platform inventory, and there is not enough of this asset available right now. Try another coin, try again later, or contact support if this keeps happening.`,
-        );
+        Alert.alert('Temporarily unavailable', treasuryInventoryBuyUserMessage(selectedCrypto.symbol, err));
       } else if (err.toLowerCase().includes('insufficient')) {
         fetchBalance().then(() => setShowInsufficientBalanceModal(true));
+      } else if (err.includes('Could not reach ChainCola')) {
+        Alert.alert('Connection problem', err);
       } else {
         Alert.alert('Error', err);
       }
@@ -776,6 +787,19 @@ export default function BuyCryptoScreen() {
         </View>
       </Modal>
 
+      {/* Full-screen loader while instant buy runs (modal closes first) */}
+      <Modal visible={executing} transparent animationType="fade" statusBarTranslucent>
+        <View style={styles.executingLoaderOverlay}>
+          <View style={styles.executingLoaderCard}>
+            <AppLoadingIndicator size="large" variant="onLight" durationMs={1100} />
+            <ThemedText style={styles.executingLoaderTitle}>Processing your purchase</ThemedText>
+            <ThemedText style={styles.executingLoaderSubtitle}>
+              Completing your buy securely. This usually takes a few seconds.
+            </ThemedText>
+          </View>
+        </View>
+      </Modal>
+
       {/* Insufficient Balance Modal */}
       <InsufficientBalanceModal
         visible={showInsufficientBalanceModal}
@@ -1034,6 +1058,41 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'flex-end',
+  },
+  executingLoaderOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  executingLoaderCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingVertical: 36,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    maxWidth: 340,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 8,
+  },
+  executingLoaderTitle: {
+    marginTop: 22,
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#11181C',
+    textAlign: 'center',
+  },
+  executingLoaderSubtitle: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#6B7280',
+    textAlign: 'center',
   },
   pickerModal: {
     backgroundColor: '#FFFFFF',

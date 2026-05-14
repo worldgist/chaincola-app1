@@ -1826,6 +1826,17 @@ export async function instantSellCrypto(request: InstantSellRequest): Promise<In
  * Instant Buy Crypto - Internal ledger swap (no blockchain movement)
  * Swaps NGN to crypto instantly using system inventory
  */
+export function humanizeInstantBuyNetworkError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (/network request failed/i.test(raw) || /^failed to fetch$/i.test(raw.trim())) {
+    return (
+      'Could not reach ChainCola. Check your internet connection or VPN. ' +
+      'If you use Expo with tunnel, try switching to LAN or another network, then try again.'
+    );
+  }
+  return raw || 'Failed to execute instant buy';
+}
+
 export async function instantBuyCrypto(request: InstantBuyRequest): Promise<InstantBuyResponse> {
   try {
     console.log('💰 Instant buy request:', request);
@@ -1925,7 +1936,7 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
     console.error('❌ Exception in instant buy:', error);
     return {
       success: false,
-      error: error.message || 'Failed to execute instant buy',
+      error: humanizeInstantBuyNetworkError(error),
     };
   }
 }

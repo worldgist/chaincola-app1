@@ -162,12 +162,12 @@ export default function SellCryptoScreen() {
       ]);
       const { price, error } = cryptoRes;
       if (error || !price) {
-        setPriceError(`No static rate for ${selectedCrypto.symbol}`);
+        setPriceError(`No live rate for ${selectedCrypto.symbol}`);
         setExchangeRate(null);
         setSellRatePerUsdNgn(null);
         return;
       }
-      const sellRateNgn = price.bid ?? 0;
+      const sellRateNgn = price.bid ?? price.price_ngn ?? 0;
       if (sellRateNgn > 0) {
         setExchangeRate(sellRateNgn);
         setPriceError(null);
@@ -296,10 +296,10 @@ export default function SellCryptoScreen() {
           cryptoSymbol: selectedCrypto.symbol,
         });
         
-        // Try to get static sell rate from pricing engine
+        // Try again for a live sell quote (bid or mid)
         try {
           const { price: retryPrice } = await getCryptoPrice(selectedCrypto.symbol, { forceRefresh: true });
-          const sellRateNgn = retryPrice?.bid ?? 0;
+          const sellRateNgn = retryPrice?.bid ?? retryPrice?.price_ngn ?? 0;
           if (sellRateNgn > 0) {
             setExchangeRate(sellRateNgn);
             setExchangeRateUSD(sellRateNgn / 1650);
@@ -307,7 +307,7 @@ export default function SellCryptoScreen() {
             currentPrice = selectedFiat.id === 'USD' ? sellRateNgn / 1650 : sellRateNgn;
           }
           if (!currentPrice || currentPrice <= 0) {
-            throw new Error('No static rate available');
+            throw new Error('No live price available');
           }
         } catch (retryError: any) {
           console.error('Failed to fetch price on retry:', retryError);

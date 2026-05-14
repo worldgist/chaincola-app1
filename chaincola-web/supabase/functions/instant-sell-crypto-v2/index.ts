@@ -10,6 +10,11 @@ import {
   parseMinSystemReserveFromAdditionalSettings,
   parseMinSystemReserveFromEnv,
 } from "../_shared/min-system-reserve-ngn.ts";
+import {
+  STATIC_NGN_RATES_PER_UNIT,
+  fetchCryptoPriceRow,
+  resolveSellNgnPerUnit,
+} from "../_shared/ngn-rate-from-crypto-prices.ts";
 import { evaluateInstantSell } from "../_shared/treasury-trade-gates.ts";
 import {
   getInstantSellOnChainTransferPlan,
@@ -23,14 +28,14 @@ const corsHeaders = {
 
 const DEFAULT_FEE_PERCENTAGE = 0.01; // 1% default - overridden by admin app_settings
 
-// Static NGN rates per 1 unit of crypto
-const STATIC_SELL_RATES_NGN: Record<string, number> = {
-  'BTC': 70_000_000,
-  'ETH': 4_000_000,
-  'USDT': 1_650,
-  'USDC': 1_650,
-  'XRP': 1_000,
-  'SOL': 250_000,
+/** Minimum plausible NGN per 1 coin (sell bid). Below this, treat feed as bad and use static. */
+const MIN_SANE_SELL_RATE_NGN: Record<string, number> = {
+  BTC: 5_000_000,
+  ETH: 200_000,
+  USDT: 500,
+  USDC: 500,
+  XRP: 20,
+  SOL: 5_000,
 };
 
 serve(async (req) => {
@@ -108,9 +113,21 @@ serve(async (req) => {
 
     console.log(`💰 Instant sell request: User=${user.id}, Asset=${assetUpper}, Amount=${cryptoAmount}`);
 
-    let rate = STATIC_SELL_RATES_NGN[assetUpper] || 0;
-    const rateSource = 'static';
-    console.log(`📊 Using static sell price for ${assetUpper}: ₦${rate}`);
+    const priceRow = await fetchCryptoPriceRow(supabase, assetUpper);
+    const resolvedSell = resolveSellNgnPerUnit(priceRow, assetUpper);
+    let rate = resolvedSell.rate;
+    let rateSource = resolvedSell.source;
+    console.log(`📊 Sell rate for ${assetUpper}: ₦${rate.toFixed(2)} / unit (${rateSource})`);
+
+    const floor = MIN_SANE_SELL_RATE_NGN[assetUpper];
+    const staticRate = STATIC_NGN_RATES_PER_UNIT[assetUpper];
+    if (floor != null && rate > 0 && rate < floor && staticRate != null && staticRate > 0) {
+      console.warn(
+        `⚠️ Sell rate ₦${rate} for ${assetUpper} is below sanity minimum ₦${floor} (bad feed?). Using static fallback ₦${staticRate}.`,
+      );
+      rate = staticRate;
+      rateSource = "static";
+    }
 
     if (!rate || rate <= 0) {
       return new Response(

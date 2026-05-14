@@ -10,6 +10,11 @@ import {
   parseMinSystemReserveFromAdditionalSettings,
   parseMinSystemReserveFromEnv,
 } from "../_shared/min-system-reserve-ngn.ts";
+import {
+  STATIC_NGN_RATES_PER_UNIT,
+  fetchCryptoPriceRow,
+  resolveBuyNgnPerUnit,
+} from "../_shared/ngn-rate-from-crypto-prices.ts";
 import { assertInstantBuyAllowed } from "../_shared/treasury-trade-gates.ts";
 
 const corsHeaders = {
@@ -29,17 +34,7 @@ const MAX_BUY_PER_TRANSACTION: Record<string, number> = {
 
 const DEFAULT_FEE_PERCENTAGE = 0.01; // 1% default - overridden by admin app_settings
 
-// Static NGN rates per 1 unit of crypto (used when no admin override/frozen price)
-const STATIC_BUY_RATES_NGN: Record<string, number> = {
-  'BTC': 70_000_000,
-  'ETH': 4_000_000,
-  'USDT': 1_650,
-  'USDC': 1_650,
-  'XRP': 1_000,
-  'SOL': 250_000,
-};
-
-/** Minimum plausible NGN per 1 coin. Values below this are treated as misconfigured static rates. */
+/** Minimum plausible NGN per 1 coin. Values below this are treated as misconfigured feeds. */
 const MIN_SANE_BUY_RATE_NGN: Record<string, number> = {
   'BTC': 5_000_000,
   'ETH': 200_000,
@@ -121,46 +116,44 @@ serve(async (req) => {
     const buyGate = await assertInstantBuyAllowed(supabase, assetUpper, corsHeaders);
     if (buyGate) return buyGate;
 
-    // Check max buy per transaction
     const maxBuy = MAX_BUY_PER_TRANSACTION[assetUpper];
+    const priceRow = await fetchCryptoPriceRow(supabase, assetUpper);
+    const resolvedBuy = resolveBuyNgnPerUnit(priceRow, assetUpper);
+    let rate = resolvedBuy.rate;
+    let rateSource = resolvedBuy.source;
+    console.log(`📊 Buy rate for ${assetUpper}: ₦${rate.toFixed(2)} / unit (${rateSource})`);
+
+    if (!rate || rate <= 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `Failed to get ${assetUpper} rate. Please try again later.`,
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     if (maxBuy) {
-      // Estimate crypto amount (rough estimate, actual will be calculated by function)
-      const estimatedRate = 1000000; // Placeholder, will get actual rate
-      const estimatedCrypto = ngnAmount / estimatedRate;
+      const estimatedCrypto = ngnAmount / rate;
       if (estimatedCrypto > maxBuy) {
         return new Response(
-          JSON.stringify({ 
-            success: false, 
-            error: `Amount exceeds maximum buy per transaction: ${maxBuy} ${assetUpper}` 
+          JSON.stringify({
+            success: false,
+            error: `Amount exceeds maximum buy per transaction: ${maxBuy} ${assetUpper}`,
           }),
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
         );
       }
     }
 
-    // Static NGN buy rate per unit (no admin pricing table)
-    let rate: number = STATIC_BUY_RATES_NGN[assetUpper] || 0;
-    console.log(`📊 Using static buy price for ${assetUpper}: ₦${rate}`);
-
-    if (!rate || rate <= 0) {
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: `Failed to get ${assetUpper} rate. Please try again later.` 
-        }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
     const floor = MIN_SANE_BUY_RATE_NGN[assetUpper];
-    const staticRate = STATIC_BUY_RATES_NGN[assetUpper];
-    if (floor != null && rate < floor) {
+    const staticRate = STATIC_NGN_RATES_PER_UNIT[assetUpper];
+    if (floor != null && rate > 0 && rate < floor && staticRate != null && staticRate > 0) {
       console.warn(
-        `⚠️ Buy rate ₦${rate} for ${assetUpper} is below sanity minimum ₦${floor} (bad admin frozen/override?). Using static fallback ₦${staticRate ?? rate}.`,
+        `⚠️ Buy rate ₦${rate} for ${assetUpper} is below sanity minimum ₦${floor} (bad feed?). Using static fallback ₦${staticRate}.`,
       );
-      if (staticRate && staticRate > 0) {
-        rate = staticRate;
-      }
+      rate = staticRate;
+      rateSource = "static";
     }
 
     // Platform fee % + minimum system NGN float (admin `risk_settings` / env; see _shared/min-system-reserve-ngn.ts)

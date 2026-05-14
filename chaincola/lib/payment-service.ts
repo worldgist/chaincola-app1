@@ -236,15 +236,29 @@ export async function verifyPayment(
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ Verification error:', response.status, errorText);
+      let detail = `HTTP ${response.status}`;
+      try {
+        const j = JSON.parse(errorText) as { error?: string; message?: string };
+        detail = j.error || j.message || detail;
+      } catch {
+        if (errorText.trim()) detail = errorText.trim().slice(0, 400);
+      }
+      console.error('❌ Verification error:', response.status, detail);
       return {
         success: false,
         verified: false,
-        error: `Verification failed: ${response.status}`,
+        error: `Verification failed: ${detail}`,
       };
     }
 
-    const result = await response.json();
+    const result = (await response.json()) as {
+      success?: boolean;
+      verified?: boolean;
+      transaction_id?: string;
+      amount?: number;
+      status?: string;
+      error?: string;
+    };
 
     console.log('✅ Payment verification result:', {
       tx_ref,
@@ -332,7 +346,13 @@ export async function syncPendingWalletFundings(userId: string): Promise<void> {
     await Promise.allSettled(
       refs.map(async (txRef) => {
         const res = await verifyPayment({ tx_ref: txRef });
-        if (!res.verified && res.error) {
+        if (res.verified) return;
+        // Pending / not yet at Flutterwave is normal during polling — avoid noisy WARN.
+        const soft =
+          res.status === 'PENDING' ||
+          (res.error &&
+            /no completed payment found|still pending|not found at gateway/i.test(res.error));
+        if (res.error && !soft) {
           console.warn('syncPendingWalletFundings:', txRef, res.error);
         }
       }),

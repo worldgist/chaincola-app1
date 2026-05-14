@@ -173,13 +173,39 @@ async function fetchMarketPricesFromEdge(
   }
 }
 
-/** Row from edge with positive USD/NGN mid (not static placeholder). */
+/** Row from edge with usable NGN (venue book or mid). USD may be 0 on NGN-only books (e.g. Luno). */
 function isSaneEdgeQuote(p: CryptoPrice | undefined): boolean {
   if (!p) return false;
   if (p.source === 'static') return false;
-  const usd = Number(p.price_usd);
   const ngn = Number(p.price_ngn);
-  return Number.isFinite(usd) && usd > 0 && Number.isFinite(ngn) && ngn > 0;
+  const bid = Number(p.bid);
+  const ask = Number(p.ask);
+  return (
+    (Number.isFinite(ngn) && ngn > 0) ||
+    (Number.isFinite(bid) && bid > 0) ||
+    (Number.isFinite(ask) && ask > 0)
+  );
+}
+
+/** Ensure `price_ngn` mid and USD exist when the venue only sent bid/ask (common on NGN books). */
+function fillMissingMidAndUsdFromBook(row: CryptoPrice): CryptoPrice {
+  const out = { ...row };
+  let ngn = Number(out.price_ngn);
+  const bid = Number(out.bid ?? 0);
+  const ask = Number(out.ask ?? 0);
+  if (!Number.isFinite(ngn) || ngn <= 0) {
+    if (bid > 0 && ask > 0) ngn = (bid + ask) / 2;
+    else if (ask > 0) ngn = ask;
+    else if (bid > 0) ngn = bid;
+    if (Number.isFinite(ngn) && ngn > 0) out.price_ngn = ngn;
+  }
+  let usd = Number(out.price_usd);
+  if (!Number.isFinite(usd) || usd <= 0) {
+    const fx = out.ngn_per_usd ?? getLastResolvedNgnPerUsd();
+    const n = Number(out.price_ngn);
+    if (fx > 0 && n > 0) out.price_usd = Math.round((n / fx) * 1e8) / 1e8;
+  }
+  return out;
 }
 
 /**
@@ -451,8 +477,8 @@ export async function getLunoPrices(
     for (const s of symbolsToUse) {
       const L = lunoEdge.prices[s];
       const A = tokenEdge.prices[s];
-      if (isSaneEdgeQuote(L)) merged[s] = { ...L };
-      else if (isSaneEdgeQuote(A)) merged[s] = { ...A };
+      if (isSaneEdgeQuote(L)) merged[s] = fillMissingMidAndUsdFromBook({ ...L });
+      else if (isSaneEdgeQuote(A)) merged[s] = fillMissingMidAndUsdFromBook({ ...A });
     }
 
     const missingAfterEdge = symbolsToUse.filter((s) => !isSaneEdgeQuote(merged[s]));
