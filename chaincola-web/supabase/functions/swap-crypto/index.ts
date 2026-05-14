@@ -4,6 +4,7 @@
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { resolveMinSystemReserveNgn } from "../_shared/min-system-reserve-ngn.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +12,6 @@ const corsHeaders = {
 };
 
 const SWAP_FEE_PERCENTAGE = 0.005; // 0.5% swap fee
-const MIN_SYSTEM_RESERVE = parseFloat(Deno.env.get('MIN_SYSTEM_RESERVE') || '1000000.00');
 
 /** NGN per 1 unit when `crypto_prices` has no row */
 const STATIC_SWAP_RATES_NGN: Record<string, number> = {
@@ -152,6 +152,8 @@ serve(async (req) => {
     console.log(`  ${fromAssetUpper} sell price: ₦${fromSellPrice.toFixed(2)}`);
     console.log(`  ${toAssetUpper} buy price: ₦${toBuyPrice.toFixed(2)}`);
 
+    const pMinSystemReserve = await resolveMinSystemReserveNgn(supabase);
+
     // Call swap function
     const { data: swapResult, error: swapError } = await supabase.rpc('swap_crypto', {
       p_user_id: user.id,
@@ -161,7 +163,7 @@ serve(async (req) => {
       p_from_sell_price: fromSellPrice,
       p_to_buy_price: toBuyPrice,
       p_swap_fee_percentage: SWAP_FEE_PERCENTAGE,
-      p_min_system_reserve: MIN_SYSTEM_RESERVE,
+      p_min_system_reserve: pMinSystemReserve,
     });
 
     if (swapError) {

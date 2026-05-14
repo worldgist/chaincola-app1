@@ -5,6 +5,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoSellNotification } from "../_shared/send-crypto-sell-notification.ts";
+import {
+  DEFAULT_MIN_SYSTEM_RESERVE_NGN,
+  parseMinSystemReserveFromAdditionalSettings,
+  parseMinSystemReserveFromEnv,
+} from "../_shared/min-system-reserve-ngn.ts";
 import { evaluateInstantSell } from "../_shared/treasury-trade-gates.ts";
 import {
   getInstantSellOnChainTransferPlan,
@@ -16,10 +21,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Minimum system reserve - can be overridden via environment variable
-// Default: ₦1,000,000 for production safety (prevents system from running out of liquidity)
-// Set to 0 for testing only
-const MIN_SYSTEM_RESERVE = parseFloat(Deno.env.get('MIN_SYSTEM_RESERVE') || '1000000.00');
 const DEFAULT_FEE_PERCENTAGE = 0.01; // 1% default - overridden by admin app_settings
 
 // Static NGN rates per 1 unit of crypto
@@ -123,12 +124,13 @@ serve(async (req) => {
 
     console.log(`📊 Final sell rate (${rateSource}): 1 ${assetUpper} = ₦${rate.toFixed(2)}`);
 
-    // Get platform fee % from app_settings (admin configurable)
+    // Get platform fee % + minimum system NGN float from app_settings / env
     let feePercentage = DEFAULT_FEE_PERCENTAGE;
+    let minSystemReserveNgn = DEFAULT_MIN_SYSTEM_RESERVE_NGN;
     try {
       const { data: appSettings } = await supabase
         .from('app_settings')
-        .select('transaction_fee_percentage')
+        .select('transaction_fee_percentage, additional_settings')
         .eq('id', 1)
         .single();
       if (appSettings?.transaction_fee_percentage != null) {
@@ -137,9 +139,13 @@ serve(async (req) => {
           feePercentage = pct / 100; // Convert 1 to 0.01 (1% = 1 in DB)
         }
       }
+      const fromRisk = parseMinSystemReserveFromAdditionalSettings(appSettings?.additional_settings);
+      if (fromRisk !== null) minSystemReserveNgn = fromRisk;
     } catch (e) {
-      console.warn('⚠️ Could not fetch app_settings fee, using default 1%');
+      console.warn('⚠️ Could not fetch app_settings fee / risk reserve, using defaults');
     }
+    const envReserve = parseMinSystemReserveFromEnv();
+    const pMinSystemReserve = envReserve !== null ? envReserve : minSystemReserveNgn;
     console.log(`📊 Platform fee: ${(feePercentage * 100).toFixed(2)}%`);
 
     // Call atomic sell RPC: validates balance, reserves amount on wallet_balances.locked (row locks),
@@ -152,7 +158,7 @@ serve(async (req) => {
       p_rate: rate,
       p_fee_percentage: feePercentage,
       p_max_sell_per_transaction: effectiveMaxSell > 0 ? effectiveMaxSell : null,
-      p_min_system_reserve: MIN_SYSTEM_RESERVE,
+      p_min_system_reserve: pMinSystemReserve,
     });
 
     if (sellError) {

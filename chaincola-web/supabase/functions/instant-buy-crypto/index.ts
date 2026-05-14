@@ -5,6 +5,11 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { sendCryptoBuyNotification } from "../_shared/send-crypto-buy-notification.ts";
+import {
+  DEFAULT_MIN_SYSTEM_RESERVE_NGN,
+  parseMinSystemReserveFromAdditionalSettings,
+  parseMinSystemReserveFromEnv,
+} from "../_shared/min-system-reserve-ngn.ts";
 import { assertInstantBuyAllowed } from "../_shared/treasury-trade-gates.ts";
 
 const corsHeaders = {
@@ -22,8 +27,6 @@ const MAX_BUY_PER_TRANSACTION: Record<string, number> = {
   'SOL': 10000,
 };
 
-// Minimum system reserve
-const MIN_SYSTEM_RESERVE = parseFloat(Deno.env.get('MIN_SYSTEM_RESERVE') || '1000000.00');
 const DEFAULT_FEE_PERCENTAGE = 0.01; // 1% default - overridden by admin app_settings
 
 // Static NGN rates per 1 unit of crypto (used when no admin override/frozen price)
@@ -160,12 +163,13 @@ serve(async (req) => {
       }
     }
 
-    // Get platform fee % from app_settings (admin configurable)
+    // Platform fee % + minimum system NGN float (admin `risk_settings` / env; see _shared/min-system-reserve-ngn.ts)
     let feePercentage = DEFAULT_FEE_PERCENTAGE;
+    let minSystemReserveNgn = DEFAULT_MIN_SYSTEM_RESERVE_NGN;
     try {
       const { data: appSettings } = await supabase
         .from('app_settings')
-        .select('transaction_fee_percentage')
+        .select('transaction_fee_percentage, additional_settings')
         .eq('id', 1)
         .single();
       if (appSettings?.transaction_fee_percentage != null) {
@@ -174,9 +178,13 @@ serve(async (req) => {
           feePercentage = pct / 100; // 1 = 1%
         }
       }
+      const fromRisk = parseMinSystemReserveFromAdditionalSettings(appSettings?.additional_settings);
+      if (fromRisk !== null) minSystemReserveNgn = fromRisk;
     } catch (e) {
-      console.warn('⚠️ Could not fetch app_settings fee, using default 1%');
+      console.warn('⚠️ Could not fetch app_settings fee / risk reserve, using defaults');
     }
+    const envReserve = parseMinSystemReserveFromEnv();
+    const pMinSystemReserve = envReserve !== null ? envReserve : minSystemReserveNgn;
 
     // Soft pre-check (RPC still locks rows and is authoritative).
     const [{ data: uwPre }, { data: wbPre }] = await Promise.all([
@@ -206,7 +214,7 @@ serve(async (req) => {
       p_ngn_amount: ngnAmount,
       p_rate: rate,
       p_fee_percentage: feePercentage,
-      p_min_system_reserve: MIN_SYSTEM_RESERVE,
+      p_min_system_reserve: pMinSystemReserve,
     });
 
     if (buyError) {
@@ -234,6 +242,10 @@ serve(async (req) => {
       if (typeof err === 'string' && err.includes('Insufficient system inventory')) {
         err =
           `${err} Instant buy uses treasury inventory. Ask an admin to credit system_wallets for this asset or check market price feeds.`;
+      }
+      if (typeof err === 'string' && err.includes('System reserve would fall below minimum')) {
+        err =
+          `${err} This is a treasury NGN float policy. An admin can lower risk_settings.minimum_ngn_reserve in app_settings, set Edge secret MIN_SYSTEM_RESERVE, or fund system_wallets.ngn_float_balance via Wallet management.`;
       }
       return new Response(
         JSON.stringify({ 
