@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -17,6 +16,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { isPINSetup, savePIN, verifyPINInput } from '@/lib/pin-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 function sanitizePin(v: string): string {
   return v.replace(/[^0-9]/g, '').slice(0, 4);
@@ -156,7 +156,7 @@ export default function ChangePinScreen() {
 
           {checkingPin ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#6B46C1" />
+              <AppLoadingIndicator size="large" />
               <ThemedText style={styles.loadingText}>Checking PIN status...</ThemedText>
             </View>
           ) : (
@@ -240,7 +240,7 @@ export default function ChangePinScreen() {
 
               <TouchableOpacity style={[styles.saveButton, loading && styles.saveButtonDisabled]} onPress={handleSave} activeOpacity={0.8} disabled={loading}>
                 <LinearGradient colors={loading ? ['#9CA3AF', '#9CA3AF'] : ['#6B46C1', '#9333EA']} style={styles.saveButtonGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
-                  {loading ? <ActivityIndicator size="small" color="#FFFFFF" /> : <ThemedText style={styles.saveButtonText}>{isSettingUp ? 'Save PIN' : 'Change PIN'}</ThemedText>}
+                  {loading ? <AppLoadingIndicator size="small" variant="onPrimary" /> : <ThemedText style={styles.saveButtonText}>{isSettingUp ? 'Save PIN' : 'Change PIN'}</ThemedText>}
                 </LinearGradient>
               </TouchableOpacity>
             </View>
@@ -550,5 +550,4 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 });
-
 

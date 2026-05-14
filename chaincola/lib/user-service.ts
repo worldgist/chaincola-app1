@@ -334,51 +334,61 @@ export async function updateUserProfile(
   }
 }
 
+function parseSignupAvailabilityPayload(data: unknown): {
+  emailExists: boolean;
+  phoneExists: boolean;
+} | null {
+  if (data == null) return null;
+  if (typeof data === 'object' && !Array.isArray(data)) {
+    const o = data as Record<string, unknown>;
+    return {
+      emailExists: Boolean(o.email_exists ?? o.emailExists),
+      phoneExists: Boolean(o.phone_exists ?? o.phoneExists),
+    };
+  }
+  return null;
+}
+
 /**
- * Checks if email or phone number already exists in the system
- * Returns an object indicating which fields are duplicates
- * Note: Email duplicates in auth.users will be caught by Supabase during signup,
- * but we check user_profiles for both email and phone number
+ * Checks if email or phone number already exists (signup-safe for anonymous users).
+ * Uses DB RPC `check_signup_availability` (SECURITY DEFINER) so RLS on user_profiles does not hide rows.
+ * Pass empty string for either field to skip that side of the check (e.g. debounced email-only validation).
  */
 export async function checkDuplicateUser(
   email: string,
   phoneNumber: string
-): Promise<{ 
-  emailExists: boolean; 
-  phoneExists: boolean; 
-  error?: string 
+): Promise<{
+  emailExists: boolean;
+  phoneExists: boolean;
+  error?: string;
 }> {
+  const trimmedEmail = (email ?? '').trim();
+  const trimmedPhone = (phoneNumber ?? '').trim();
+
   try {
-    // Check email in user_profiles table
-    // Note: Supabase auth will also catch email duplicates during signup
-    const { data: profileEmail, error: profileEmailError } = await supabase
-      .from('user_profiles')
-      .select('user_id, email')
-      .eq('email', email.trim().toLowerCase())
-      .maybeSingle();
+    const { data, error } = await supabase.rpc('check_signup_availability', {
+      p_email: trimmedEmail,
+      p_phone: trimmedPhone,
+    });
 
-    // Check phone number in user_profiles table
-    const { data: profilePhone, error: profilePhoneError } = await supabase
-      .from('user_profiles')
-      .select('user_id, phone_number')
-      .eq('phone_number', phoneNumber.trim())
-      .maybeSingle();
+    if (error) {
+      console.error('check_signup_availability RPC error:', error);
+      return {
+        emailExists: false,
+        phoneExists: false,
+        error: error.message,
+      };
+    }
 
-    // Email exists if found in user_profiles
-    // (Supabase auth will also catch duplicates during signup)
-    const emailExists = !!profileEmail;
-    
-    // Phone exists if found in user_profiles
-    const phoneExists = !!profilePhone;
+    const parsed = parseSignupAvailabilityPayload(data);
+    if (parsed) {
+      return parsed;
+    }
 
-    return {
-      emailExists,
-      phoneExists,
-    };
+    console.warn('check_signup_availability: unexpected payload', data);
+    return { emailExists: false, phoneExists: false, error: 'Unexpected response' };
   } catch (error: any) {
     console.error('Error checking duplicate user:', error);
-    // If there's an error, we'll let the signup proceed and Supabase will catch duplicates
-    // This prevents blocking signup due to network issues
     return {
       emailExists: false,
       phoneExists: false,

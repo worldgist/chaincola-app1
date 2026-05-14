@@ -83,10 +83,54 @@ export interface InstantSellResponse {
     xrp_balance: number;
     sol_balance: number;
   };
+  /** Present when edge function returns settlement metadata (instant atomic lock + treasury book). */
+  instant_settlement?: {
+    ngn_credited_immediately: boolean;
+    user_balances_updated_immediately: boolean;
+    system_treasury_booked_immediately: boolean;
+    ledger_steps: string[];
+    atomic_single_transaction: boolean;
+    on_chain_transfer?: {
+      ledger_instant_complete: boolean;
+      custody_sweep: {
+        status: string;
+        plan?: Record<string, unknown>;
+        transaction_row_metadata_merged?: boolean;
+        blockchain_broadcast_from_this_edge_function: boolean;
+        explanation?: string;
+      };
+    };
+  };
   error?: string;
 }
 
+export interface InstantBuyRequest {
+  asset: string;
+  ngn_amount: number;
+}
 
+export interface InstantBuyResponse {
+  success: boolean;
+  crypto_amount?: number;
+  ngn_amount?: number;
+  rate?: number;
+  fee_percentage?: number;
+  balances?: Record<string, unknown>;
+  transaction_id?: string;
+  instant_settlement?: Record<string, unknown>;
+  error?: string;
+}
+
+/** Platform treasury has no crypto to sell (distinct from user NGN or crypto balance). */
+export function isTreasuryInventoryShortageError(message: string | undefined | null): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('insufficient system inventory') ||
+    m.includes('system_wallets') ||
+    m.includes('treasury inventory')
+  );
+}
 
 /**
  * Buy cryptocurrency using NGN
@@ -1761,6 +1805,7 @@ export async function instantSellCrypto(request: InstantSellRequest): Promise<In
         success: true,
         ngn_amount: result.ngn_amount,
         new_balances: result.new_balances,
+        instant_settlement: result.instant_settlement,
       };
     } else {
       return {
@@ -1836,7 +1881,11 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ Error in instant buy:', response.status, errorText);
+      if (response.status === 400) {
+        console.warn('Instant buy not completed:', response.status, errorText);
+      } else {
+        console.error('❌ Error in instant buy:', response.status, errorText);
+      }
       
       let errorMessage = `HTTP ${response.status}`;
       try {
@@ -1863,6 +1912,8 @@ export async function instantBuyCrypto(request: InstantBuyRequest): Promise<Inst
         rate: result.rate,
         fee_percentage: result.fee_percentage,
         balances: result.balances,
+        transaction_id: result.transaction_id,
+        instant_settlement: result.instant_settlement,
       };
     } else {
       return {
@@ -1887,6 +1938,7 @@ export interface SwapCryptoRequest {
 
 export interface SwapCryptoResponse {
   success: boolean;
+  swap_id?: string;
   from_asset?: string;
   to_asset?: string;
   from_amount?: number;
@@ -1907,48 +1959,36 @@ export interface SwapCryptoResponse {
   error?: string;
 }
 
-/**
- * Swap Crypto - Exchange one cryptocurrency for another
- * Logic: Sell Crypto A at sell price → Buy Crypto B at buy price
- * Atomic transaction: debit user Asset A, credit system Asset A, debit system Asset B, credit user Asset B
- */
-export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCryptoResponse> {
+type SwapCryptoAction = 'quote' | 'execute';
+
+async function callSwapCrypto(
+  request: SwapCryptoRequest,
+  action: SwapCryptoAction
+): Promise<SwapCryptoResponse> {
   try {
-    console.log('🔄 Swap crypto request:', request);
+    console.log(`🔄 Swap crypto (${action}) request:`, request);
 
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
-      return {
-        success: false,
-        error: 'Not authenticated',
-      };
+      return { success: false, error: 'Not authenticated' };
     }
 
     const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl ||
-                       process.env.NEXT_PUBLIC_SUPABASE_URL ||
-                       process.env.EXPO_PUBLIC_SUPABASE_URL ||
-                       SUPABASE_URL;
+      process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.EXPO_PUBLIC_SUPABASE_URL ||
+      SUPABASE_URL;
     if (!supabaseUrl) {
-      return {
-        success: false,
-        error: 'Supabase URL not configured',
-      };
+      return { success: false, error: 'Supabase URL not configured' };
     }
 
     const functionUrl = `${supabaseUrl}/functions/v1/swap-crypto`;
     const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey ||
-                           process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-                           process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
-                           SUPABASE_ANON_KEY;
-
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ||
+      SUPABASE_ANON_KEY;
     if (!supabaseAnonKey) {
-      return {
-        success: false,
-        error: 'Supabase anon key not configured',
-      };
+      return { success: false, error: 'Supabase anon key not configured' };
     }
-
-    console.log('📡 Calling swap function:', functionUrl);
 
     const response = await fetch(functionUrl, {
       method: 'POST',
@@ -1958,35 +1998,35 @@ export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCrypto
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        action,
         from_asset: request.from_asset,
         to_asset: request.to_asset,
         from_amount: request.from_amount,
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let errorData;
-      try {
-        errorData = JSON.parse(errorText);
-      } catch {
-        errorData = { error: errorText || `HTTP ${response.status}` };
-      }
-      
-      console.error('❌ Error in swap:', response.status, errorText);
-      return {
-        success: false,
-        error: errorData.error || `Failed to swap crypto: ${response.status}`,
-      };
+    const text = await response.text();
+    let result: any = null;
+    try {
+      result = JSON.parse(text);
+    } catch {
+      result = null;
     }
 
-    const result = await response.json();
-    
-    console.log('✅ Swap response:', result);
+    if (!response.ok) {
+      const message = result?.error || result?.message || text || `HTTP ${response.status}`;
+      console.error('❌ Error in swap:', response.status, message);
+      return { success: false, error: message };
+    }
+
+    if (!result) {
+      return { success: false, error: 'Invalid response from swap service' };
+    }
 
     if (result.success) {
       return {
         success: true,
+        swap_id: result.swap_id || result.id,
         from_asset: result.from_asset,
         to_asset: result.to_asset,
         from_amount: result.from_amount,
@@ -1996,17 +2036,24 @@ export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCrypto
         new_balances: result.new_balances,
         exchange_rate: result.exchange_rate,
       };
-    } else {
-      return {
-        success: false,
-        error: result.error || 'Failed to execute swap',
-      };
     }
+
+    return { success: false, error: result.error || 'Failed to execute swap' };
   } catch (error: any) {
     console.error('❌ Exception in swap:', error);
-    return {
-      success: false,
-      error: error.message || 'Failed to execute swap',
-    };
+    return { success: false, error: error.message || 'Failed to execute swap' };
   }
+}
+
+export async function getSwapCryptoQuote(request: SwapCryptoRequest): Promise<SwapCryptoResponse> {
+  return callSwapCrypto(request, 'quote');
+}
+
+/**
+ * Swap Crypto - Exchange one cryptocurrency for another
+ * Logic: Sell Crypto A at sell price → Buy Crypto B at buy price
+ * Atomic transaction: debit user Asset A, credit system Asset A, debit system Asset B, credit user Asset B
+ */
+export async function swapCrypto(request: SwapCryptoRequest): Promise<SwapCryptoResponse> {
+  return callSwapCrypto(request, 'execute');
 }

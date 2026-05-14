@@ -1,19 +1,61 @@
-// Live market prices via Supabase `get-luno-prices` (Alchemy + Luno) with static fallbacks.
+// Prices: Supabase `get-luno-ngn-quotes` (Luno NGN tickers + SOL via Alchemy) merged with `get-token-prices` (Alchemy all symbols). Prefer Luno when sane so wallet/home stay live even if Alchemy-only path fails. Use `getLunoPrices(..., { retailOverlay: false })` for spot display; default applies retail spread on top of spot/static fallbacks.
 
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
-import {
-  applyRetailSpreadToRow,
-  extractEngineBuySell,
-  type EngineBuySellPartial,
-  retailMarkupMultiplier,
-} from './retail-pricing';
+import { applyRetailSpreadToRow, retailMarkupMultiplier, type RetailMovementContext } from './retail-pricing';
 
-/** NGN per 1 USD - used for "per USD" rate display on buy/sell screens */
+/** NGN per 1 USD — default before any live feed; updated from `get-token-prices` `usd_to_ngn`. */
 export const USD_TO_NGN_RATE = 1650;
 
-/** Supported crypto symbols for pricing (pricing engine only) */
+let lastResolvedNgnPerUsd = USD_TO_NGN_RATE;
+
+/** Latest NGN/USD from the token price edge response (or initial default). */
+export function getLastResolvedNgnPerUsd(): number {
+  return lastResolvedNgnPerUsd;
+}
+
+/** Ignore corrupt stablecoin rows / bad admin overrides (e.g. ₦1 per USDT). */
+const MIN_SANE_STABLE_NGN_PER_USD = 400;
+const MAX_SANE_STABLE_NGN_PER_USD = 5000;
+
+/**
+ * Implied NGN per 1 USD from a USDT/USDC quote (price_usd ≈ 1).
+ * Prefer ngn/usd when both are present; else use ask/bid if in sane band.
+ */
+export function impliedNgnPerUsdFromStableQuote(
+  price: CryptoPrice | null | undefined,
+  side: 'buy' | 'sell',
+): number | null {
+  if (!price) return null;
+  const usd = Number(price.price_usd);
+  const ngnRaw = side === 'buy' ? (price.ask ?? price.price_ngn) : (price.bid ?? price.price_ngn);
+  const ngn = Number(ngnRaw ?? 0);
+  if (usd > 0 && ngn > 0) {
+    const perUsd = ngn / usd;
+    if (perUsd >= MIN_SANE_STABLE_NGN_PER_USD && perUsd <= MAX_SANE_STABLE_NGN_PER_USD) {
+      return perUsd;
+    }
+  }
+  if (ngn >= MIN_SANE_STABLE_NGN_PER_USD && ngn <= MAX_SANE_STABLE_NGN_PER_USD && usd > 0 && Math.abs(usd - 1) < 0.05) {
+    return ngn;
+  }
+  const rowFx = price.ngn_per_usd;
+  if (rowFx != null && Number.isFinite(rowFx) && rowFx >= MIN_SANE_STABLE_NGN_PER_USD && rowFx <= MAX_SANE_STABLE_NGN_PER_USD) {
+    return rowFx;
+  }
+  return null;
+}
+
+export function getDisplayBuyRateNgnPerUsd(usdtQuote: CryptoPrice | null | undefined): number {
+  return impliedNgnPerUsdFromStableQuote(usdtQuote, 'buy') ?? getLastResolvedNgnPerUsd();
+}
+
+export function getDisplaySellRateNgnPerUsd(usdtQuote: CryptoPrice | null | undefined): number {
+  return impliedNgnPerUsdFromStableQuote(usdtQuote, 'sell') ?? getLastResolvedNgnPerUsd();
+}
+
+/** Supported crypto symbols for pricing */
 const SUPPORTED_SYMBOLS = ['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'TRX'];
 
 /**
@@ -26,10 +68,14 @@ export const STATIC_CRYPTO_RATES_NGN: Record<string, number> = {
   USDT: 1_650,
   USDC: 1_650,
   XRP: 1_000,
+  SOL: 250_000,
   TRX: 250,
 };
 
-const CACHE_DURATION_MS = 10000;
+const CACHE_DURATION_MS = 2500;
+
+/** Last edge spot mid (NGN) per symbol for volatility-aware retail spread. */
+const lastSpotMidNgnBySymbol: Record<string, number> = {};
 
 interface CachedPrices {
   prices: Record<string, CryptoPrice>;
@@ -37,7 +83,9 @@ interface CachedPrices {
   pendingRequest?: Promise<{ prices: Record<string, CryptoPrice>; error: any }>;
 }
 
-let priceCache: CachedPrices | null = null;
+/** Separate caches so spot (display) and retail (quotes) never mix stale rows. */
+let priceCacheRetail: CachedPrices | null = null;
+let priceCacheSpot: CachedPrices | null = null;
 
 async function fetchMarketPricesFromEdge(
   symbols: string[]
@@ -50,7 +98,7 @@ async function fetchMarketPricesFromEdge(
     const functionUrl = `${SUPABASE_URL}/functions/v1/get-token-prices?symbols=${encodeURIComponent(normalized.join(','))}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     const response = await fetch(functionUrl, {
       method: 'GET',
@@ -72,6 +120,15 @@ async function fetchMarketPricesFromEdge(
       return { prices: {}, error: data.error || 'Price service error' };
     }
 
+    const rawFx = (data as { usd_to_ngn?: unknown }).usd_to_ngn;
+    const ngnPerUsd =
+      typeof rawFx === 'number' && Number.isFinite(rawFx) && rawFx >= 400 && rawFx <= 5000
+        ? rawFx
+        : undefined;
+    if (ngnPerUsd != null) {
+      lastResolvedNgnPerUsd = ngnPerUsd;
+    }
+
     const prices: Record<string, CryptoPrice> = {};
     for (const symbol of Object.keys(data.prices)) {
       const p = data.prices[symbol] as {
@@ -83,17 +140,28 @@ async function fetchMarketPricesFromEdge(
         last_updated?: string;
         volume_24h?: number;
         change_24h_pct?: number;
+        source?: string;
       };
-      prices[symbol.toUpperCase()] = {
-        crypto_symbol: p.crypto_symbol || symbol.toUpperCase(),
-        price_usd: p.price_usd || 0,
-        price_ngn: p.price_ngn || 0,
-        bid: p.bid,
-        ask: p.ask,
+      const symU = symbol.toUpperCase();
+      const priceUsd = Number(p.price_usd) || 0;
+      let priceNgn = Number(p.price_ngn) || 0;
+      if (priceNgn <= 0 && priceUsd > 0 && ngnPerUsd != null) {
+        priceNgn = Math.round(priceUsd * ngnPerUsd * 100) / 100;
+      }
+      const edgeSrc = String(p.source || '').toLowerCase();
+      const rowSource: string =
+        edgeSrc === 'public_spot' ? 'public_spot' : 'alchemy';
+      prices[symU] = {
+        crypto_symbol: p.crypto_symbol || symU,
+        price_usd: priceUsd,
+        price_ngn: priceNgn,
+        bid: p.bid != null ? Number(p.bid) : undefined,
+        ask: p.ask != null ? Number(p.ask) : undefined,
         last_updated: p.last_updated || new Date().toISOString(),
-        volume_24h: p.volume_24h,
-        source: 'alchemy',
-        change_24h_pct: p.change_24h_pct,
+        volume_24h: p.volume_24h != null ? Number(p.volume_24h) : undefined,
+        source: rowSource,
+        change_24h_pct: p.change_24h_pct != null ? Number(p.change_24h_pct) : undefined,
+        ...(ngnPerUsd != null ? { ngn_per_usd: ngnPerUsd } : {}),
       };
     }
     return { prices, error: null };
@@ -102,6 +170,132 @@ async function fetchMarketPricesFromEdge(
       return { prices: {}, error: 'Price request timeout' };
     }
     return { prices: {}, error: e?.message || 'Price fetch failed' };
+  }
+}
+
+/** Row from edge with positive USD/NGN mid (not static placeholder). */
+function isSaneEdgeQuote(p: CryptoPrice | undefined): boolean {
+  if (!p) return false;
+  if (p.source === 'static') return false;
+  const usd = Number(p.price_usd);
+  const ngn = Number(p.price_ngn);
+  return Number.isFinite(usd) && usd > 0 && Number.isFinite(ngn) && ngn > 0;
+}
+
+/**
+ * Luno public NGN tickers (+ SOL spot on the edge: Alchemy or Binance SOL/USDT × FX).
+ */
+async function fetchLunoNgnQuotesFromEdge(
+  symbols: string[],
+): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+      return { prices: {}, error: 'Supabase not configured' };
+    }
+    const normalized = [...new Set(symbols.map((s) => s.toUpperCase().trim()).filter(Boolean))];
+    if (normalized.length === 0) return { prices: {}, error: null };
+
+    const functionUrl = `${SUPABASE_URL}/functions/v1/get-luno-ngn-quotes?symbols=${encodeURIComponent(
+      normalized.join(','),
+    )}`;
+
+    const controller = new AbortController();
+    timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+    const response = await fetch(functionUrl, {
+      method: 'GET',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutId = undefined;
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return {
+        prices: {},
+        error: `get-luno-ngn-quotes HTTP ${response.status}: ${text.slice(0, 200)}`,
+      };
+    }
+
+    const data = (await response.json()) as {
+      success?: boolean;
+      prices?: Record<
+        string,
+        {
+          crypto_symbol?: string;
+          price_usd?: number;
+          price_ngn?: number;
+          bid?: number;
+          ask?: number;
+          last_updated?: string;
+          volume_24h?: number;
+          change_24h_pct?: number;
+          source?: string;
+        }
+      >;
+      errors?: Record<string, string>;
+      error?: string;
+      usd_to_ngn?: unknown;
+    };
+
+    if (data.error && !data.prices) {
+      return { prices: {}, error: String(data.error) };
+    }
+
+    const rawFx = data.usd_to_ngn;
+    const ngnPerUsd =
+      typeof rawFx === 'number' && Number.isFinite(rawFx) && rawFx >= 400 && rawFx <= 5000
+        ? rawFx
+        : undefined;
+    if (ngnPerUsd != null) {
+      lastResolvedNgnPerUsd = ngnPerUsd;
+    }
+
+    const raw = data.prices ?? {};
+    const prices: Record<string, CryptoPrice> = {};
+    for (const sym of normalized) {
+      const row = raw[sym];
+      if (!row) continue;
+      const bid = row.bid != null ? Number(row.bid) : 0;
+      const ask = row.ask != null ? Number(row.ask) : 0;
+      const priceNgn = Number(row.price_ngn) || 0;
+      const priceUsd = Number(row.price_usd) || 0;
+      const mid =
+        priceNgn > 0 ? priceNgn : bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
+      const src =
+        row.source === 'luno' || row.source === 'alchemy_spread' || row.source === 'public_spread'
+          ? row.source
+          : 'luno';
+      prices[sym] = {
+        crypto_symbol: row.crypto_symbol || sym,
+        price_usd: priceUsd,
+        price_ngn: mid,
+        bid: bid > 0 ? bid : undefined,
+        ask: ask > 0 ? ask : undefined,
+        last_updated: row.last_updated || new Date().toISOString(),
+        volume_24h: row.volume_24h != null ? Number(row.volume_24h) : undefined,
+        change_24h_pct: row.change_24h_pct != null ? Number(row.change_24h_pct) : undefined,
+        source: src,
+        ...(ngnPerUsd != null ? { ngn_per_usd: ngnPerUsd } : {}),
+      };
+    }
+
+    return {
+      prices,
+      error: Object.keys(prices).length === 0 ? data.error || 'No Luno NGN quotes' : null,
+    };
+  } catch (e: unknown) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (e instanceof Error && e.name === 'AbortError') {
+      return { prices: {}, error: 'Luno quotes request timeout' };
+    }
+    return { prices: {}, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -117,6 +311,8 @@ export interface CryptoPrice {
   source?: string;
   /** 24h % change when provided by price service */
   change_24h_pct?: number;
+  /** NGN per 1 USD from `get-token-prices` (`usd_to_ngn`). */
+  ngn_per_usd?: number;
 }
 
 export interface CryptoBalance {
@@ -126,104 +322,47 @@ export interface CryptoBalance {
   ngnValue: number;
 }
 
-/**
- * Fetch buy/sell rates from pricing engine only (no market/Luno/crypto price).
- * Returns static rates from pricing_engine_config (override or frozen).
- */
-async function fetchPricingEngineSidesRpc(
-  symbols: string[],
-): Promise<Record<string, EngineBuySellPartial | null>> {
-  const map: Record<string, EngineBuySellPartial | null> = {};
-  await Promise.all(
-    symbols.map(async (s) => {
-      try {
-        const { data, error } = await supabase.rpc('get_pricing_engine_config', { p_asset: s });
-        if (error || !data?.length) {
-          map[s] = null;
-          return;
-        }
-        map[s] = extractEngineBuySell(data[0] as Record<string, unknown>);
-      } catch {
-        map[s] = null;
-      }
-    }),
-  );
-  return map;
-}
-
-async function getStaticRatesFromPricingEngine(symbols: string[]): Promise<Record<string, CryptoPrice>> {
-  const usdToNgn = USD_TO_NGN_RATE;
-  const now = new Date().toISOString();
-  const result: Record<string, CryptoPrice> = {};
-
-  await Promise.all(
-    symbols.map(async (symbol) => {
-      const symbolUpper = symbol.toUpperCase();
-      try {
-        const { data: configData, error: configError } = await supabase.rpc('get_pricing_engine_config', {
-          p_asset: symbolUpper,
-        });
-        if (configError || !configData || configData.length === 0) {
-          return;
-        }
-        const config = configData[0];
-        let buyPrice = 0;
-        let sellPrice = 0;
-        if (config.price_frozen) {
-          buyPrice = parseFloat((config.frozen_buy_price_ngn ?? 0).toString());
-          sellPrice = parseFloat((config.frozen_sell_price_ngn ?? 0).toString());
-        } else {
-          buyPrice = parseFloat((config.override_buy_price_ngn ?? 0).toString());
-          sellPrice = parseFloat((config.override_sell_price_ngn ?? 0).toString());
-        }
-        if (buyPrice > 0 || sellPrice > 0) {
-          result[symbolUpper] = {
-            crypto_symbol: symbolUpper,
-            price_usd: buyPrice > 0 ? buyPrice / usdToNgn : 0,
-            price_ngn: buyPrice,
-            bid: sellPrice,
-            ask: buyPrice,
-            last_updated: now,
-            source: 'static_rate',
-          };
-        }
-      } catch (e) {
-        console.warn(`Pricing config for ${symbolUpper} failed:`, e);
-      }
-    })
-  );
-  return result;
-}
+/** When false, callers get live spot (edge FX × USD). When true (default), retail spread applies on spot/static — for buy/sell quotes. */
+export type GetLunoPricesOptions = { retailOverlay?: boolean; forceRefresh?: boolean };
 
 /**
- * Get a single crypto price from pricing engine only (static rate).
+ * Single-symbol quote. Default `retailOverlay: true` matches buy/sell engine quotes.
+ * Use `retailOverlay: false` for screens that should show live spot (charts, holdings context).
  */
-export async function getCryptoPrice(symbol: string): Promise<{ price: CryptoPrice | null; error: any }> {
+export async function getCryptoPrice(
+  symbol: string,
+  opts?: Pick<GetLunoPricesOptions, 'retailOverlay' | 'forceRefresh'>,
+): Promise<{ price: CryptoPrice | null; error: any }> {
   const symbolUpper = symbol.toUpperCase();
+  const retailOverlay = opts?.retailOverlay !== false;
+  const forceRefresh = Boolean(opts?.forceRefresh);
   if (!SUPPORTED_SYMBOLS.includes(symbolUpper)) {
     return { price: null, error: `Unsupported cryptocurrency: ${symbol}` };
   }
-  if (priceCache?.prices?.[symbolUpper] && Date.now() - priceCache.timestamp < CACHE_DURATION_MS) {
-    return { price: priceCache.prices[symbolUpper], error: null };
+  const layer = retailOverlay ? priceCacheRetail : priceCacheSpot;
+  if (
+    !forceRefresh &&
+    layer?.prices?.[symbolUpper] &&
+    Date.now() - layer.timestamp < CACHE_DURATION_MS
+  ) {
+    return { price: layer.prices[symbolUpper], error: null };
   }
-  const { prices, error } = await getLunoPrices([symbolUpper]);
+  const { prices, error } = await getLunoPrices([symbolUpper], { retailOverlay, forceRefresh });
   if (error || !prices[symbolUpper]) {
     return { price: null, error: error || `Price not found for ${symbol}` };
   }
-  if (!priceCache) priceCache = { prices: {}, timestamp: 0 };
-  priceCache.prices[symbolUpper] = prices[symbolUpper];
-  priceCache.timestamp = Date.now();
   return { price: prices[symbolUpper], error: null };
 }
 
 /**
- * Get static crypto rates (fallback when pricing engine has no config).
+ * Get static crypto rates (fallback when the edge price feed has no row).
  * Uses in-app constants only.
  */
 export function getStaticCryptoRates(symbols?: string[]): { prices: Record<string, CryptoPrice>; error: null } {
   const symbolsToUse = symbols || SUPPORTED_SYMBOLS;
   const prices: Record<string, CryptoPrice> = {};
   const now = new Date().toISOString();
+  const fx = getLastResolvedNgnPerUsd();
   for (const symbol of symbolsToUse) {
     const symbolUpper = symbol.toUpperCase();
     const rateNgn = STATIC_CRYPTO_RATES_NGN[symbolUpper];
@@ -233,12 +372,13 @@ export function getStaticCryptoRates(symbols?: string[]): { prices: Record<strin
       const sellNgn = buyNgn / mult;
       prices[symbolUpper] = {
         crypto_symbol: symbolUpper,
-        price_usd: buyNgn / USD_TO_NGN_RATE,
+        price_usd: buyNgn / fx,
         price_ngn: buyNgn,
         bid: sellNgn,
         ask: buyNgn,
         last_updated: now,
         source: 'static',
+        ngn_per_usd: fx,
       };
     }
   }
@@ -249,17 +389,43 @@ export function getStaticCryptoRates(symbols?: string[]): { prices: Record<strin
  * Get crypto market prices (edge function, then fallbacks).
  */
 export async function getCryptoPrices(): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
-  return getLunoPrices(SUPPORTED_SYMBOLS);
+  return getLunoPrices(SUPPORTED_SYMBOLS, { retailOverlay: false });
+}
+
+/** Mid market row for holdings / ticker display (no admin overrides, no retail markup). */
+function spotNormalizeForDisplay(row: CryptoPrice, symbol: string): CryptoPrice {
+  const usd = Number(row.price_usd);
+  let ngn = Number(row.price_ngn);
+  const fx = row.ngn_per_usd;
+  if ((!Number.isFinite(ngn) || ngn <= 0) && Number.isFinite(usd) && usd > 0 && fx != null && Number.isFinite(fx) && fx > 0) {
+    ngn = Math.round(usd * fx * 100) / 100;
+  }
+  return {
+    ...row,
+    crypto_symbol: row.crypto_symbol || symbol,
+    price_ngn: ngn,
+    price_usd: usd,
+    bid: Number.isFinite(ngn) && ngn > 0 ? ngn : row.bid,
+    ask: Number.isFinite(ngn) && ngn > 0 ? ngn : row.ask,
+  };
 }
 
 /**
- * Live market prices: Supabase edge (Alchemy/Luno) → pricing engine → static constants.
+ * Live market prices: `get-luno-ngn-quotes` (Luno NGN + SOL on server) merged with `get-token-prices` (Alchemy),
+ * then static fallbacks, then retail markup when `retailOverlay` is true.
  */
-export async function getLunoPrices(symbols?: string[]): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+export async function getLunoPrices(
+  symbols?: string[],
+  options?: GetLunoPricesOptions,
+): Promise<{ prices: Record<string, CryptoPrice>; error: any }> {
+  const retailOverlay = options?.retailOverlay !== false;
+  const forceRefresh = Boolean(options?.forceRefresh);
+
   try {
     const symbolsToUse = (symbols || SUPPORTED_SYMBOLS).map((s) => s.toUpperCase());
+    const priceCache = retailOverlay ? priceCacheRetail : priceCacheSpot;
 
-    if (priceCache && Date.now() - priceCache.timestamp < CACHE_DURATION_MS) {
+    if (!forceRefresh && priceCache && Date.now() - priceCache.timestamp < CACHE_DURATION_MS) {
       const cached: Record<string, CryptoPrice> = {};
       let allHit = true;
       for (const s of symbolsToUse) {
@@ -277,48 +443,68 @@ export async function getLunoPrices(symbols?: string[]): Promise<{ prices: Recor
 
     const merged: Record<string, CryptoPrice> = {};
 
-    const edge = await fetchMarketPricesFromEdge(symbolsToUse);
-    if (edge.prices && Object.keys(edge.prices).length > 0) {
-      Object.assign(merged, edge.prices);
+    const [lunoEdge, tokenEdge] = await Promise.all([
+      fetchLunoNgnQuotesFromEdge(symbolsToUse),
+      fetchMarketPricesFromEdge(symbolsToUse),
+    ]);
+
+    for (const s of symbolsToUse) {
+      const L = lunoEdge.prices[s];
+      const A = tokenEdge.prices[s];
+      if (isSaneEdgeQuote(L)) merged[s] = { ...L };
+      else if (isSaneEdgeQuote(A)) merged[s] = { ...A };
     }
 
-    const missingAfterEdge = symbolsToUse.filter(
-      (s) => !merged[s] || !merged[s].price_usd || merged[s].price_usd <= 0
-    );
+    const missingAfterEdge = symbolsToUse.filter((s) => !isSaneEdgeQuote(merged[s]));
     if (missingAfterEdge.length > 0) {
-      const staticEngine = await getStaticRatesFromPricingEngine(missingAfterEdge);
-      Object.assign(merged, staticEngine);
-    }
-
-    const missingAfterStatic = symbolsToUse.filter(
-      (s) => !merged[s] || !merged[s].price_usd || merged[s].price_usd <= 0
-    );
-    if (missingAfterStatic.length > 0) {
-      const { prices: hardcoded } = getStaticCryptoRates(missingAfterStatic);
+      const { prices: hardcoded } = getStaticCryptoRates(missingAfterEdge);
       Object.assign(merged, hardcoded);
     }
-
-    const engineSides = await fetchPricingEngineSidesRpc(symbolsToUse);
 
     const out: Record<string, CryptoPrice> = {};
     for (const s of symbolsToUse) {
       if (!merged[s]) continue;
-      const normalized = applyRetailSpreadToRow(merged[s], engineSides[s] ?? null, s) as CryptoPrice;
-      out[s] = normalized;
+      const spotMid = Number(merged[s].price_ngn);
+      const prev = lastSpotMidNgnBySymbol[s];
+      const movement: RetailMovementContext | undefined =
+        prev != null && prev > 0 && spotMid > 0 ? { prevSpotMidNgn: prev } : undefined;
+      out[s] = retailOverlay
+        ? (applyRetailSpreadToRow(merged[s], null, s, movement) as CryptoPrice)
+        : spotNormalizeForDisplay(merged[s], s);
+      if (spotMid > 0) {
+        lastSpotMidNgnBySymbol[s] = spotMid;
+      }
     }
 
-    if (!priceCache) priceCache = { prices: {}, timestamp: 0 };
-    priceCache.prices = { ...priceCache.prices, ...out };
-    priceCache.timestamp = Date.now();
+    if (Object.keys(out).length === 0) {
+      return {
+        prices: {},
+        error:
+          tokenEdge.error ||
+          lunoEdge.error ||
+          'No live or fallback prices for requested symbols',
+      };
+    }
+
+    const nextCache: CachedPrices = {
+      prices: { ...(priceCache?.prices ?? {}), ...out },
+      timestamp: Date.now(),
+    };
+    if (retailOverlay) {
+      priceCacheRetail = nextCache;
+    } else {
+      priceCacheSpot = nextCache;
+    }
 
     return { prices: out, error: null };
   } catch (error: any) {
     console.error('❌ Error fetching market prices:', error);
-    if (priceCache?.prices && Object.keys(priceCache.prices).length > 0) {
+    const fallbackCache = retailOverlay ? priceCacheRetail : priceCacheSpot;
+    if (fallbackCache?.prices && Object.keys(fallbackCache.prices).length > 0) {
       const symbolsToUse = (symbols || SUPPORTED_SYMBOLS).map((s) => s.toUpperCase());
       const fallback: Record<string, CryptoPrice> = {};
       for (const s of symbolsToUse) {
-        if (priceCache.prices[s]) fallback[s] = priceCache.prices[s];
+        if (fallbackCache.prices[s]) fallback[s] = fallbackCache.prices[s];
       }
       if (Object.keys(fallback).length > 0) return { prices: fallback, error: null };
     }
@@ -461,7 +647,7 @@ export async function getUserCryptoBalances(userId: string): Promise<{ balances:
     // Live prices (do not race with an empty timeout — that often wins and drops real prices)
     try {
       const allCurrencies = Object.keys(balances);
-      const priceResult = await getLunoPrices(allCurrencies);
+      const priceResult = await getLunoPrices(allCurrencies, { retailOverlay: false });
 
       if (priceResult.prices && Object.keys(priceResult.prices).length > 0 && !priceResult.error) {
         for (const symbol of Object.keys(balances)) {

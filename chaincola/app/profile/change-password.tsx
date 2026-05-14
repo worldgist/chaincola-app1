@@ -8,7 +8,6 @@ import {
   Platform,
   ScrollView,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -17,6 +16,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 export default function ChangePasswordScreen() {
   const { user } = useAuth();
@@ -256,7 +257,7 @@ export default function ChangePasswordScreen() {
                 end={{ x: 1, y: 0 }}
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <ThemedText style={styles.saveButtonText}>Change Password</ThemedText>
                 )}

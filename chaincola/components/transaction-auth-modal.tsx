@@ -5,7 +5,6 @@ import {
   Modal,
   TextInput,
   Alert,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
@@ -14,6 +13,8 @@ import { ThemedView } from './themed-view';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { verifyPINInput, getBiometricPreference, isPINSetup } from '@/lib/pin-service';
 import { authenticateWithBiometric, checkBiometricAvailability } from '@/lib/biometric-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 interface TransactionAuthModalProps {
   visible: boolean;
@@ -230,7 +231,7 @@ export default function TransactionAuthModal({
 
             {authMethod === 'biometric' && loading && (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#6B46C1" />
+                <AppLoadingIndicator size="large" />
                 <ThemedText style={styles.loadingText}>
                   Authenticating...
                 </ThemedText>

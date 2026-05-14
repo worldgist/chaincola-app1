@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { StyleSheet, View, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { StyleSheet, View, TouchableOpacity, ScrollView, RefreshControl, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -10,7 +10,6 @@ import { ThemedView } from '@/components/themed-view';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/contexts/AuthContext';
-import { useNetworkMode } from '@/contexts/NetworkModeContext';
 import { getUserProfile } from '@/lib/user-service';
 import { getUnreadNotificationsCount } from '@/lib/notification-service';
 import { getWalletBalances, formatBalance, getUsdBalance } from '@/lib/wallet-service';
@@ -20,6 +19,7 @@ import { getUserVerificationStatus } from '@/lib/verification-service';
 import CryptoSelectModal from '@/components/crypto-select-modal';
 import BiometricSetupPrompt from '@/components/biometric-setup-prompt';
 import WalletAddressModal from '@/components/wallet-address-modal';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function HomeScreen() {
   const colorScheme = useColorScheme();
@@ -510,7 +510,7 @@ export default function HomeScreen() {
 
     const t = setTimeout(() => {
       homePriceRefetchDoneRef.current = true;
-      getLunoPrices(keys)
+      getLunoPrices(keys, { retailOverlay: false })
         .then(({ prices }) => {
           if (!prices || Object.keys(prices).length === 0) return;
           setCryptoBalances((prev) => {
@@ -632,7 +632,7 @@ export default function HomeScreen() {
           <View style={styles.headerContent}>
             <View style={styles.headerTextContainer}>
               {loading ? (
-                <ActivityIndicator size="small" color={Colors[colorScheme ?? 'light'].icon} />
+                <AppLoadingIndicator size="small" />
               ) : (
                 <>
                   <ThemedText 
@@ -683,7 +683,7 @@ export default function HomeScreen() {
             <View style={styles.balanceItem}>
               <ThemedText style={styles.currencyLabel}>NGN Balance</ThemedText>
               {balanceLoading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" style={{ marginTop: 8 }} />
+                <AppLoadingIndicator size="small" variant="onPrimary" style={{ marginTop: 8 }} />
               ) : (
                 <ThemedText 
                   style={styles.balanceAmount}
@@ -815,7 +815,7 @@ export default function HomeScreen() {
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.BTC?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
               <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
                 {Number(cryptoBalances?.BTC?.price_ngn) > 0
-                  ? `${formatNgnValue(Number(cryptoBalances.BTC.price_ngn))}/unit · ${cryptoBalances?.BTC?.balance ?? 0} BTC`
+                  ? `${formatNgnValue(Number(cryptoBalances.BTC.price_ngn))} · ${cryptoBalances?.BTC?.balance ?? 0} BTC`
                   : `${cryptoBalances?.BTC?.balance ?? 0} BTC`}
               </ThemedText>
             </View>
@@ -836,7 +836,7 @@ export default function HomeScreen() {
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.ETH?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
               <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
                 {Number(cryptoBalances?.ETH?.price_ngn) > 0
-                  ? `${formatNgnValue(Number(cryptoBalances.ETH.price_ngn))}/unit · ${cryptoBalances?.ETH?.balance ?? 0} ETH`
+                  ? `${formatNgnValue(Number(cryptoBalances.ETH.price_ngn))} · ${cryptoBalances?.ETH?.balance ?? 0} ETH`
                   : `${cryptoBalances?.ETH?.balance ?? 0} ETH`}
               </ThemedText>
             </View>
@@ -857,7 +857,7 @@ export default function HomeScreen() {
               <ThemedText style={styles.assetRightValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>₦{(cryptoBalances?.SOL?.ngnValue || 0).toLocaleString('en-NG', {minimumFractionDigits:2, maximumFractionDigits:2})}</ThemedText>
               <ThemedText style={styles.assetSubText} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.75}>
                 {Number(cryptoBalances?.SOL?.price_ngn) > 0
-                  ? `${formatNgnValue(Number(cryptoBalances.SOL.price_ngn))}/unit · ${cryptoBalances?.SOL?.balance ?? 0} SOL`
+                  ? `${formatNgnValue(Number(cryptoBalances.SOL.price_ngn))} · ${cryptoBalances?.SOL?.balance ?? 0} SOL`
                   : `${cryptoBalances?.SOL?.balance ?? 0} SOL`}
               </ThemedText>
             </View>

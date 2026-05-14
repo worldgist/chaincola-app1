@@ -4,6 +4,9 @@ const router = express.Router();
 const { validateConfig, getHeaders, getApiBase } = require('../config/flutterwave');
 const { requireAdminFromBearer, requireUserFromBearer } = require('../supabase');
 
+/** Max wait for Flutterwave /transfers (server returns 502 before mobile client times out). */
+const FLUTTERWAVE_TRANSFERS_TIMEOUT_MS = 70_000;
+
 function normalizeFlutterwaveBody(fwJson) {
   const st = fwJson && fwJson.status;
   return {
@@ -264,6 +267,7 @@ router.post('/initiate', async (req, res) => {
       const fwRes = await axios.post(`${getApiBase()}/transfers`, fwPayload, {
         headers: getHeaders(),
         validateStatus: () => true,
+        timeout: FLUTTERWAVE_TRANSFERS_TIMEOUT_MS,
       });
       fwStatus = fwRes.status;
       fwJson = fwRes.data;

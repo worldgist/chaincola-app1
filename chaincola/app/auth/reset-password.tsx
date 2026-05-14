@@ -9,14 +9,14 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+import { AUTH_EMAIL_OTP_LENGTH } from '@/lib/auth-email-otp-length';
 
 export default function ResetPasswordScreen() {
   const [newPassword, setNewPassword] = useState('');
@@ -26,7 +26,7 @@ export default function ResetPasswordScreen() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const { user, session } = useAuth();
+  const { user, session, updatePassword } = useAuth();
 
   useEffect(() => {
     // Check if user has a valid session (from OTP verification)
@@ -34,7 +34,7 @@ export default function ResetPasswordScreen() {
     if (!session && !user) {
       Alert.alert(
         'Session Expired',
-        'Please verify your email code again to reset your password.',
+        `Please request a new reset link and enter the ${AUTH_EMAIL_OTP_LENGTH}-digit code from your email to continue.`,
         [
           {
             text: 'OK',
@@ -66,7 +66,7 @@ export default function ResetPasswordScreen() {
     if (!session) {
       Alert.alert(
         'Session Expired',
-        'Please verify your email code again to reset your password.',
+        `Please request a new reset link and enter the ${AUTH_EMAIL_OTP_LENGTH}-digit code from your email to continue.`,
         [
           {
             text: 'OK',
@@ -81,10 +81,7 @@ export default function ResetPasswordScreen() {
     setErrorMessage('');
 
     try {
-      // Update password using Supabase
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
+      const { error } = await updatePassword(newPassword);
 
       if (error) {
         setErrorMessage(error.message || 'Failed to reset password. Please try again.');
@@ -122,7 +119,9 @@ export default function ResetPasswordScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.content}>
-            <ThemedText 
+            <ThemedText
+              lightColor="#4C1D95"
+              darkColor="#4C1D95"
               style={styles.title}
               numberOfLines={2}
               adjustsFontSizeToFit
@@ -130,7 +129,9 @@ export default function ResetPasswordScreen() {
             >
               Reset Password
             </ThemedText>
-            <ThemedText 
+            <ThemedText
+              lightColor="#5B21B6"
+              darkColor="#5B21B6"
               style={styles.subtitle}
               numberOfLines={3}
               adjustsFontSizeToFit
@@ -235,7 +236,7 @@ export default function ResetPasswordScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#6B46C1" size="small" />
+                    <AppLoadingIndicator size="small" />
                   ) : (
                     <ThemedText
                       style={[
@@ -316,18 +317,25 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     fontWeight: 'bold',
-    color: '#FFFFFF',
+    color: '#4C1D95',
     marginBottom: 8,
     textAlign: 'center',
     paddingHorizontal: 8,
     lineHeight: 38,
+    textShadowColor: 'rgba(255, 255, 255, 0.55)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   subtitle: {
     fontSize: 15,
-    color: '#E9D5FF',
+    fontWeight: '600',
+    color: '#5B21B6',
     marginBottom: 32,
     textAlign: 'center',
     lineHeight: 22,
+    textShadowColor: 'rgba(255, 255, 255, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   form: {
     width: '100%',

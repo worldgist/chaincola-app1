@@ -9,22 +9,54 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+import { formatVerifyOtpUserMessage } from '@/lib/auth-verify-errors';
+import { AUTH_EMAIL_OTP_LENGTH } from '@/lib/auth-email-otp-length';
+
+function firstParam(value: string | string[] | undefined): string {
+  if (value == null) return '';
+  return Array.isArray(value) ? (value[0] ?? '') : value;
+}
+
+function safeDecodeURIComponent(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** Merges overlapping auto-resend calls (e.g. React Strict Mode) into a single network request. */
+const pendingAutoResendByKey = new Map<string, Promise<void>>();
+
+function dedupeAutoResend(key: string, run: () => Promise<void>): Promise<void> {
+  const existing = pendingAutoResendByKey.get(key);
+  if (existing) {
+    return existing;
+  }
+  const started = (async () => {
+    try {
+      await run();
+    } finally {
+      pendingAutoResendByKey.delete(key);
+    }
+  })();
+  pendingAutoResendByKey.set(key, started);
+  return started;
+}
 
 export default function VerifyEmailScreen() {
   const params = useLocalSearchParams();
-  const flow = params.flow as string;
-  const email = params.email as string;
+  const flow = firstParam(params.flow as string | string[] | undefined);
+  const email = safeDecodeURIComponent(firstParam(params.email as string | string[] | undefined)).trim();
   const autoResend = params.autoResend === 'true';
-  // OTP length - configured to match Supabase's 8-digit codes
-  const OTP_LENGTH = 8;
-  const [code, setCode] = useState(Array(OTP_LENGTH).fill(''));
+  const [code, setCode] = useState(() => Array(AUTH_EMAIL_OTP_LENGTH).fill(''));
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
@@ -60,58 +92,55 @@ export default function VerifyEmailScreen() {
   // Auto-resend verification email if autoResend param is true
   useEffect(() => {
     if (autoResend && email) {
-      const autoResendCode = async () => {
-        const userEmail = email || user?.email || '';
-        if (userEmail) {
+      const userEmail = (email || user?.email || '').trim().toLowerCase();
+      if (!userEmail) {
+        return;
+      }
+
+      const resendType = flow === 'recovery' ? 'recovery' : 'signup';
+      const dedupeKey = `auto:${userEmail}:${resendType}`;
+
+      const timer = setTimeout(() => {
+        void dedupeAutoResend(dedupeKey, async () => {
           try {
-            // Determine the type based on flow
-            const resendType = flow === 'recovery' ? 'recovery' : 'signup';
             const { error } = await resendVerificationEmail(userEmail, resendType);
             if (!error) {
-              // Set cooldown to prevent immediate resend
               setResendCooldown(60);
               Alert.alert(
                 'Verification Code Sent',
-                'A new verification code has been sent to your email. Please check your inbox.'
+                `A new ${AUTH_EMAIL_OTP_LENGTH}-digit code has been sent to your email. Please check your inbox.`
               );
             } else {
               console.error('Auto-resend error:', error);
-              // Don't show error alert for auto-resend, let user manually resend if needed
             }
-          } catch (error) {
-            console.error('Auto-resend exception:', error);
-            // Don't show error alert for auto-resend, let user manually resend if needed
+          } catch (err) {
+            console.error('Auto-resend exception:', err);
           }
-        }
-      };
-      
-      // Small delay to ensure screen is mounted
-      const timer = setTimeout(() => {
-        autoResendCode();
+        });
       }, 500);
-      
+
       return () => clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoResend, email]);
+  }, [autoResend, email, flow]);
 
   const handleCodeChange = (text: string, index: number) => {
     // Only allow digits
     const numericText = text.replace(/[^0-9]/g, '');
     
     if (numericText.length > 1) {
-      // Handle paste - only accept up to OTP_LENGTH digits
-      const pastedCode = numericText.slice(0, OTP_LENGTH).split('');
+      // Handle paste - only accept up to AUTH_EMAIL_OTP_LENGTH digits
+      const pastedCode = numericText.slice(0, AUTH_EMAIL_OTP_LENGTH).split('');
       const newCode = [...code];
       pastedCode.forEach((digit, i) => {
-        if (index + i < OTP_LENGTH) {
+        if (index + i < AUTH_EMAIL_OTP_LENGTH) {
           newCode[index + i] = digit;
         }
       });
       setCode(newCode);
       
       // Focus on the last filled input or next empty
-      const nextIndex = Math.min(index + pastedCode.length, OTP_LENGTH - 1);
+      const nextIndex = Math.min(index + pastedCode.length, AUTH_EMAIL_OTP_LENGTH - 1);
       inputRefs.current[nextIndex]?.focus();
     } else {
       const newCode = [...code];
@@ -119,7 +148,7 @@ export default function VerifyEmailScreen() {
       setCode(newCode);
 
       // Auto-focus next input
-      if (numericText && index < OTP_LENGTH - 1) {
+      if (numericText && index < AUTH_EMAIL_OTP_LENGTH - 1) {
         inputRefs.current[index + 1]?.focus();
       }
     }
@@ -133,8 +162,8 @@ export default function VerifyEmailScreen() {
 
   const handleVerify = async () => {
     const verificationCode = code.join('');
-    if (verificationCode.length !== OTP_LENGTH) {
-      Alert.alert('Error', `Please enter the complete ${OTP_LENGTH}-digit code`);
+    if (verificationCode.length !== AUTH_EMAIL_OTP_LENGTH) {
+      Alert.alert('Error', `Please enter the complete ${AUTH_EMAIL_OTP_LENGTH}-digit code`);
       return;
     }
 
@@ -143,28 +172,19 @@ export default function VerifyEmailScreen() {
       return;
     }
 
-    const userEmail = email || user?.email || '';
+    const userEmail = (email || user?.email || '').trim().toLowerCase();
     setLoading(true);
 
     try {
-      const type = flow === 'signup' ? 'signup' : 'recovery';
-      const { error } = await verifyOTP(userEmail, verificationCode, type);
+      const otpContext: 'signup' | 'recovery' = flow === 'recovery' ? 'recovery' : 'signup';
+      const { error } = await verifyOTP(userEmail, verificationCode, otpContext);
 
       if (error) {
-        let errorMessage = 'Verification failed. Please check the code and try again.';
-        
-        if (error.message.includes('expired')) {
-          errorMessage = 'This verification code has expired. Please request a new one.';
-        } else if (error.message.includes('invalid')) {
-          errorMessage = 'Invalid verification code. Please check and try again.';
-        } else if (error.message) {
-          errorMessage = error.message;
-        }
-        
+        const errorMessage = formatVerifyOtpUserMessage(error);
         Alert.alert('Verification Failed', errorMessage);
         setLoading(false);
         // Clear the code on error
-        setCode(Array(OTP_LENGTH).fill(''));
+        setCode(Array(AUTH_EMAIL_OTP_LENGTH).fill(''));
         inputRefs.current[0]?.focus();
         return;
       }
@@ -205,7 +225,7 @@ export default function VerifyEmailScreen() {
       return;
     }
 
-    const userEmail = email || user?.email || '';
+    const userEmail = (email || user?.email || '').trim().toLowerCase();
     setResending(true);
 
     try {
@@ -263,7 +283,7 @@ export default function VerifyEmailScreen() {
                 adjustsFontSizeToFit
                 minimumFontScale={0.6}
               >
-                Verify Email
+                {flow === 'recovery' ? 'Reset password' : 'Verify Email'}
               </ThemedText>
               <ThemedText 
                 style={styles.subtitle}
@@ -271,9 +291,11 @@ export default function VerifyEmailScreen() {
                 adjustsFontSizeToFit
                 minimumFontScale={0.8}
               >
-                {flow === 'signup' 
-                  ? `We've sent a verification email to your inbox. Enter the ${OTP_LENGTH}-digit code from the email, or click the verification link.`
-                  : `Enter the ${OTP_LENGTH}-digit verification code sent to your email`}
+                {flow === 'recovery'
+                  ? `Enter the ${AUTH_EMAIL_OTP_LENGTH}-digit code from your email. After verifying, you can choose a new password.`
+                  : flow === 'signup'
+                    ? `We've sent a verification email to your inbox. Enter the ${AUTH_EMAIL_OTP_LENGTH}-digit code from the email, or click the verification link.`
+                    : `Enter the ${AUTH_EMAIL_OTP_LENGTH}-digit verification code sent to your email`}
               </ThemedText>
             </View>
 
@@ -315,7 +337,7 @@ export default function VerifyEmailScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <>
                       <MaterialIcons name="verified" size={20} color="#FFFFFF" />
@@ -346,7 +368,7 @@ export default function VerifyEmailScreen() {
                   disabled={resending || resendCooldown > 0}
                 >
                   {resending ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <ThemedText 
                       style={[

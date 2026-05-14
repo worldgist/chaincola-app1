@@ -9,7 +9,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,10 +17,16 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import * as Clipboard from 'expo-clipboard';
-import { getCryptoPrice, formatCryptoBalance, formatNgnValue } from '@/lib/crypto-price-service';
+import {
+  getCryptoPrice,
+  formatCryptoBalance,
+  formatNgnValue,
+  getDisplayBuyRateNgnPerUsd,
+} from '@/lib/crypto-price-service';
 import { getNgnBalance } from '@/lib/wallet-service';
-import { instantBuyCrypto } from '@/lib/buy-sell-service';
+import { instantBuyCrypto, isTreasuryInventoryShortageError } from '@/lib/buy-sell-service';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 const cryptoList = [
   { id: '1', name: 'Bitcoin', symbol: 'BTC', logo: require('@/assets/images/bitcoin.png') },
@@ -62,6 +67,10 @@ export default function BuyCryptoScreen() {
   const [ngnBalance, setNgnBalance] = useState(0);
   const [ngnAmount, setNgnAmount] = useState('');
   const [exchangeRate, setExchangeRate] = useState<number | null>(null);
+  /** NGN per 1 USD from USDT buy quote — same idea as sell screen’s “Sell rate: 1 USD = ₦…” */
+  const [buyRatePerUsdNgn, setBuyRatePerUsdNgn] = useState<number | null>(null);
+  const [fetchingPrice, setFetchingPrice] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
   const [showCryptoPicker, setShowCryptoPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [quote, setQuote] = useState<any>(null);
@@ -71,16 +80,17 @@ export default function BuyCryptoScreen() {
   const [buyResult, setBuyResult] = useState<any>(null);
   const [estimatedCrypto, setEstimatedCrypto] = useState<number | null>(null);
   const [showInsufficientBalanceModal, setShowInsufficientBalanceModal] = useState(false);
-  /** Buy rate per USD (NGN) from pricing engine - USDT buy price */
-  const [buyRatePerUsdNgn, setBuyRatePerUsdNgn] = useState<number | null>(null);
-
   useEffect(() => {
     if (!user) {
       router.replace('/(tabs)/wallet');
       return;
     }
     fetchBalance();
-    fetchExchangeRate();
+    fetchExchangeRate(false);
+    const id = setInterval(() => {
+      void fetchExchangeRate(true);
+    }, 2500);
+    return () => clearInterval(id);
   }, [user, selectedCrypto]);
 
   useEffect(() => {
@@ -106,15 +116,20 @@ export default function BuyCryptoScreen() {
     }
   };
 
-  const fetchExchangeRate = async () => {
+  const fetchExchangeRate = async (forceRefresh = false) => {
+    if (!forceRefresh) {
+      setFetchingPrice(true);
+      setPriceError(null);
+    }
     try {
       const [cryptoRes, usdtRes] = await Promise.all([
-        getCryptoPrice(selectedCrypto.symbol),
-        getCryptoPrice('USDT'),
+        getCryptoPrice(selectedCrypto.symbol, { forceRefresh }),
+        getCryptoPrice('USDT', { forceRefresh }),
       ]);
       const { price, error } = cryptoRes;
       if (error || !price) {
-        console.warn(`⚠️ No static rate for ${selectedCrypto.symbol}`);
+        console.warn(`⚠️ No buy rate for ${selectedCrypto.symbol}`);
+        setPriceError(`No rate for ${selectedCrypto.symbol}`);
         setExchangeRate(null);
         setBuyRatePerUsdNgn(null);
         return;
@@ -122,16 +137,23 @@ export default function BuyCryptoScreen() {
       const buyRateNgn = price.price_ngn ?? price.ask ?? 0;
       if (buyRateNgn > 0) {
         setExchangeRate(buyRateNgn);
+        setPriceError(null);
+        const perUsd = getDisplayBuyRateNgnPerUsd(usdtRes.price ?? null);
+        setBuyRatePerUsdNgn(perUsd);
       } else {
         setExchangeRate(null);
+        setBuyRatePerUsdNgn(null);
+        setPriceError(`No buy rate for ${selectedCrypto.symbol}`);
       }
-      // Buy rate per USD from pricing engine (USDT buy = NGN per 1 USD)
-      const usdtBuy = usdtRes.price?.price_ngn ?? usdtRes.price?.ask ?? 0;
-      setBuyRatePerUsdNgn(usdtBuy > 0 ? usdtBuy : null);
     } catch (error: any) {
       console.error('Error getting exchange rate:', error);
+      setPriceError(error?.message || 'Error getting exchange rate');
       setExchangeRate(null);
       setBuyRatePerUsdNgn(null);
+    } finally {
+      if (!forceRefresh) {
+        setFetchingPrice(false);
+      }
     }
   };
 
@@ -215,7 +237,12 @@ export default function BuyCryptoScreen() {
         await fetchBalance();
       } else {
         const err = result.error || 'Failed to execute buy';
-        if (err.toLowerCase().includes('insufficient')) {
+        if (isTreasuryInventoryShortageError(err)) {
+          Alert.alert(
+            'Temporarily unavailable',
+            `${selectedCrypto.symbol} instant buy uses platform inventory, and there is not enough of this asset available right now. Try another coin, try again later, or contact support if this keeps happening.`,
+          );
+        } else if (err.toLowerCase().includes('insufficient')) {
           await fetchBalance();
           setShowInsufficientBalanceModal(true);
         } else {
@@ -224,7 +251,12 @@ export default function BuyCryptoScreen() {
       }
     } catch (error: any) {
       const err = error.message || 'Failed to execute buy';
-      if (err.toLowerCase().includes('insufficient')) {
+      if (isTreasuryInventoryShortageError(err)) {
+        Alert.alert(
+          'Temporarily unavailable',
+          `${selectedCrypto.symbol} instant buy uses platform inventory, and there is not enough of this asset available right now. Try another coin, try again later, or contact support if this keeps happening.`,
+        );
+      } else if (err.toLowerCase().includes('insufficient')) {
         fetchBalance().then(() => setShowInsufficientBalanceModal(true));
       } else {
         Alert.alert('Error', err);
@@ -275,10 +307,25 @@ export default function BuyCryptoScreen() {
                 </ThemedText>
               </View>
             </View>
+            {fetchingPrice && !exchangeRate && (
+              <View style={styles.exchangeRateBadge}>
+                <AppLoadingIndicator size="small" style={{ marginRight: 8 }} />
+                <ThemedText style={styles.exchangeRateText}>Fetching price...</ThemedText>
+              </View>
+            )}
+            {priceError && !exchangeRate && (
+              <View style={styles.exchangeRateBadge}>
+                <ThemedText style={[styles.exchangeRateText, { color: '#EF4444' }]}>{priceError}</ThemedText>
+              </View>
+            )}
             {exchangeRate && buyRatePerUsdNgn != null && (
               <View style={styles.exchangeRateBadge}>
                 <ThemedText style={styles.exchangeRateText}>
-                  Buy rate: 1 USD = ₦{buyRatePerUsdNgn.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  Buy rate: 1 USD = ₦
+                  {buyRatePerUsdNgn.toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
                 </ThemedText>
               </View>
             )}
@@ -410,7 +457,7 @@ export default function BuyCryptoScreen() {
             activeOpacity={0.8}
           >
             {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <AppLoadingIndicator size="small" variant="onPrimary" />
             ) : (
               <ThemedText style={styles.continueButtonText}>Continue</ThemedText>
             )}
@@ -568,7 +615,7 @@ export default function BuyCryptoScreen() {
                 disabled={executing}
               >
                 {executing ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="check-circle" size={20} color="#FFFFFF" />
@@ -822,13 +869,15 @@ const styles = StyleSheet.create({
   },
   exchangeRateBadge: {
     backgroundColor: '#E9D5FF',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 16,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
     alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   exchangeRateText: {
-    fontSize: 11,
+    fontSize: 10,
     color: '#6B46C1',
     fontWeight: '500',
   },

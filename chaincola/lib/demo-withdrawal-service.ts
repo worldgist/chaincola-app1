@@ -113,6 +113,7 @@ export async function demoWithdraw(
       .insert({
         user_id: userId,
         amount: amount.toString(),
+        fee_amount: withdrawalFee,
         currency: 'NGN',
         bank_name,
         account_number,
@@ -145,6 +146,10 @@ export async function demoWithdraw(
       p_user_id: userId,
       p_amount: totalDeduction,
       p_currency: 'NGN',
+      p_ledger_ref_type: 'withdrawal',
+      p_ledger_ref_id: withdrawal.id,
+      p_ledger_payout_amount: amount,
+      p_ledger_fee_amount: withdrawalFee,
     });
 
     if (debitError) {

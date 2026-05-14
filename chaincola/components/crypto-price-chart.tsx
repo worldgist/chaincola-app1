@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
-import { View, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 interface Props {
   /** Price points, oldest to newest. */
@@ -67,7 +68,7 @@ export default function CryptoPriceChart({
   if (loading) {
     return (
       <View style={[styles.placeholder, { width, height }]}>
-        <ActivityIndicator size="small" color="#9CA3AF" />
+        <AppLoadingIndicator size="small" variant="onMuted" />
       </View>
     );
   }

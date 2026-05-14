@@ -9,7 +9,6 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,6 +17,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserProfile, updateUserProfile } from '@/lib/user-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 // Supabase removed
 
 export default function EditProfileScreen() {
@@ -150,7 +151,7 @@ export default function EditProfileScreen() {
           <View style={styles.form}>
             {loading ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#6B46C1" />
+                <AppLoadingIndicator size="large" />
                 <ThemedText style={styles.loadingText}>Loading profile...</ThemedText>
               </View>
             ) : (
@@ -227,7 +228,7 @@ export default function EditProfileScreen() {
                     end={{ x: 1, y: 0 }}
                   >
                     {saving ? (
-                      <ActivityIndicator color="#FFFFFF" size="small" />
+                      <AppLoadingIndicator size="small" variant="onPrimary" />
                     ) : (
                       <ThemedText style={styles.saveButtonText}>Save Changes</ThemedText>
                     )}

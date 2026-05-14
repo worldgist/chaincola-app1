@@ -1,4 +1,4 @@
-// Admin: update treasury receive addresses on `public.system_wallets` id=1 (service role; JWT must be admin).
+// Admin: read/update `public.system_wallets` id=1 — treasury addresses and ledger credits (JWT must be admin; RPC uses service role).
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -97,6 +97,81 @@ serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const action = body?.action as string | undefined;
+
+    if (action === 'get') {
+      const sel = await supabase.from('system_wallets').select('*').eq('id', 1).maybeSingle();
+      if (sel.error) {
+        return new Response(JSON.stringify({ success: false, error: sel.error.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      if (!sel.data) {
+        const ins = await supabase.from('system_wallets').insert(systemWalletInsertDefaults()).select('*').maybeSingle();
+        if (ins.error) {
+          return new Response(JSON.stringify({ success: false, error: ins.error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ success: true, data: ins.data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, data: sel.data }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action === 'fund_inventory') {
+      const rawAsset = body?.asset;
+      const asset = typeof rawAsset === 'string' ? rawAsset.trim().toUpperCase() : '';
+      const allowed = new Set(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL', 'NGN']);
+      if (!allowed.has(asset)) {
+        return new Response(JSON.stringify({ success: false, error: 'Invalid or missing asset' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const amt = body?.amount;
+      const amount = typeof amt === 'number' ? amt : typeof amt === 'string' ? parseFloat(amt) : NaN;
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return new Response(JSON.stringify({ success: false, error: 'amount must be a positive number' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const rawReason = body?.reason;
+      const reason =
+        typeof rawReason === 'string' && rawReason.trim().length > 0 ? rawReason.trim().slice(0, 2000) : null;
+
+      const rpc = await supabase.rpc('admin_credit_system_wallet', {
+        p_asset: asset,
+        p_amount: amount,
+        p_admin_user_id: user.id,
+        p_reason: reason,
+      });
+      if (rpc.error) {
+        return new Response(JSON.stringify({ success: false, error: rpc.error.message }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      const rows = rpc.data as Record<string, unknown>[] | Record<string, unknown> | null;
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      if (!row) {
+        return new Response(JSON.stringify({ success: false, error: 'RPC returned no row' }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, data: row }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     if (action === 'update_addresses') {
       const raw = body?.addresses;

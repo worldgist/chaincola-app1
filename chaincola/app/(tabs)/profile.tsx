@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, Alert, ActivityIndicator, Modal, TextInput, Platform } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, Alert, Modal, TextInput, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
@@ -11,9 +11,11 @@ import { isBiometricEnabled, saveBiometricPreference, getBiometricType } from '@
 import { getUserVerificationStatus, type VerificationStatus } from '@/lib/verification-service';
 import { getUserTransactionsForStatement } from '@/lib/transaction-service';
 import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
@@ -712,7 +714,7 @@ export default function ProfileScreen() {
   const toggleNetworkMode = async (value: boolean) => {
     try {
       const newMode = value ? 'testnet' : 'mainnet';
-      await setNetworkMode(newMode);
+      await AsyncStorage.setItem('chaincola_network_mode', newMode);
       Alert.alert(
         'Network Mode Changed',
         `Switched to ${value ? 'Test Mode' : 'Live Mode'}. Please restart the app for changes to take full effect.`,
@@ -750,7 +752,7 @@ export default function ProfileScreen() {
         >
           <View style={styles.cardContent}>
             {loading ? (
-              <ActivityIndicator size="large" color="#FFFFFF" />
+              <AppLoadingIndicator size="large" variant="onPrimary" />
             ) : (
               <>
                 <View style={styles.avatarContainer}>
@@ -1138,7 +1140,7 @@ export default function ProfileScreen() {
                 disabled={generatingStatement}
               >
                 {generatingStatement ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="description" size={18} color="#FFFFFF" />
@@ -1167,7 +1169,7 @@ export default function ProfileScreen() {
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
             >
-              <ActivityIndicator size="large" color="#FFFFFF" />
+              <AppLoadingIndicator size="large" variant="onPrimary" />
             </LinearGradient>
             <ThemedText style={styles.loadingModalTitle}>
               {sendToEmail ? 'Generating & Sending Statement' : 'Generating Statement'}

@@ -3,6 +3,104 @@ import type { Database } from '@/lib/supabase/database.types';
 
 export type SystemWalletRow = Database['public']['Tables']['system_wallets']['Row'];
 
+export type FundableSystemAsset = 'BTC' | 'ETH' | 'USDT' | 'USDC' | 'XRP' | 'SOL' | 'NGN';
+
+type Access = { token: string; supabaseUrl: string; anonKey: string };
+
+async function resolveAdminAccess(): Promise<{ ok: true; access: Access } | { ok: false; error: string }> {
+  const supabase = createClient();
+  let {
+    data: { session },
+    error: sessionError,
+  } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    const refreshed = await supabase.auth.refreshSession();
+    session = refreshed.data.session ?? session;
+  }
+  if (!session?.access_token) {
+    return { ok: false, error: sessionError?.message || 'Not authenticated' };
+  }
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+  if (!supabaseUrl) {
+    return { ok: false, error: 'Supabase URL not configured' };
+  }
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+  return {
+    ok: true,
+    access: { token: session.access_token, supabaseUrl, anonKey },
+  };
+}
+
+async function postAdminSystemWallets(
+  body: Record<string, unknown>,
+): Promise<{
+  success: boolean;
+  data?: SystemWalletRow;
+  error?: string;
+}> {
+  try {
+    const gate = await resolveAdminAccess();
+    if (!gate.ok) {
+      return { success: false, error: gate.error };
+    }
+    const { token, supabaseUrl, anonKey } = gate.access;
+    const res = await fetch(`${supabaseUrl}/functions/v1/admin-system-wallets`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        apikey: anonKey,
+      },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      data?: SystemWalletRow;
+      error?: string;
+    };
+    if (!res.ok || !json.success) {
+      return {
+        success: false,
+        error: json.error || `HTTP ${res.status}`,
+      };
+    }
+    return { success: true, data: json.data };
+  } catch (e) {
+    return { success: false, error: (e as Error)?.message || 'Request failed' };
+  }
+}
+
+/**
+ * Load current `system_wallets` row id=1 (admin JWT + Edge service role).
+ */
+export async function fetchAdminSystemWalletRow(): Promise<{
+  success: boolean;
+  data?: SystemWalletRow;
+  error?: string;
+}> {
+  return postAdminSystemWallets({ action: 'get' });
+}
+
+/**
+ * Atomically credits hot crypto inventory or NGN float on `system_wallets` id=1 (admin JWT + Edge + RPC).
+ */
+export async function fundAdminSystemWalletLedger(params: {
+  asset: FundableSystemAsset;
+  amount: number;
+  reason?: string;
+}): Promise<{
+  success: boolean;
+  data?: SystemWalletRow;
+  error?: string;
+}> {
+  return postAdminSystemWallets({
+    action: 'fund_inventory',
+    asset: params.asset,
+    amount: params.amount,
+    reason: params.reason,
+  });
+}
+
 /**
  * Local form defaults for treasury addresses (no GET). Admin fills fields, then Save posts `update_addresses` only.
  */
@@ -59,47 +157,7 @@ export async function updateAdminSystemWalletAddresses(
   data?: SystemWalletRow;
   error?: string;
 }> {
-  try {
-    const supabase = createClient();
-    let {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-    if (!session?.access_token) {
-      const refreshed = await supabase.auth.refreshSession();
-      session = refreshed.data.session ?? session;
-    }
-    if (!session?.access_token) {
-      return { success: false, error: sessionError?.message || 'Not authenticated' };
-    }
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    if (!supabaseUrl) {
-      return { success: false, error: 'Supabase URL not configured' };
-    }
-    const res = await fetch(`${supabaseUrl}/functions/v1/admin-system-wallets`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-        apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      },
-      body: JSON.stringify({ action: 'update_addresses', addresses }),
-    });
-    const json = (await res.json().catch(() => ({}))) as {
-      success?: boolean;
-      data?: SystemWalletRow;
-      error?: string;
-    };
-    if (!res.ok || !json.success) {
-      return {
-        success: false,
-        error: json.error || `HTTP ${res.status}`,
-      };
-    }
-    return { success: true, data: json.data };
-  } catch (e) {
-    return { success: false, error: (e as Error)?.message || 'Failed to update addresses' };
-  }
+  return postAdminSystemWallets({ action: 'update_addresses', addresses });
 }
 
 /** Main receive / treasury on-chain address(es) per app ticker. */

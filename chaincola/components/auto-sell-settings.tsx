@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Switch, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Switch, Alert } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 interface AutoSellPreferences {
   auto_sell_crypto: boolean;
@@ -106,7 +108,7 @@ export default function AutoSellSettings() {
   if (loading) {
     return (
       <ThemedView style={styles.container}>
-        <ActivityIndicator size="large" color="#6B46C1" />
+        <AppLoadingIndicator size="large" />
       </ThemedView>
     );
   }

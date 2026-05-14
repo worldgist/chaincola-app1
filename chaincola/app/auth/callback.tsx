@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import * as Linking from 'expo-linking';
 import { router } from 'expo-router';
-import { supabase } from '@/lib/supabase';
-import { parseSupabaseAuthTokensFromUrl } from '@/lib/supabase-auth-redirect';
+import { establishSessionFromAuthRedirectUrl } from '@/lib/supabase-auth-redirect';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 /**
  * Target route for Supabase email redirects (signup / password recovery).
@@ -11,24 +12,12 @@ import { parseSupabaseAuthTokensFromUrl } from '@/lib/supabase-auth-redirect';
 export default function AuthCallbackScreen() {
   useEffect(() => {
     const applySession = async (url: string | null) => {
-      if (!url || !url.includes('access_token=') || !url.includes('refresh_token=')) {
+      const result = await establishSessionFromAuthRedirectUrl(url);
+      if (!result.success) {
         router.replace('/auth/signin');
         return;
       }
-      const parsed = parseSupabaseAuthTokensFromUrl(url);
-      if (!parsed.access_token || !parsed.refresh_token) {
-        router.replace('/auth/signin');
-        return;
-      }
-      const { error } = await supabase.auth.setSession({
-        access_token: parsed.access_token,
-        refresh_token: parsed.refresh_token,
-      });
-      if (error) {
-        router.replace('/auth/signin');
-        return;
-      }
-      if (parsed.type === 'recovery') {
+      if (result.flow === 'recovery') {
         router.replace('/auth/reset-password');
       } else {
         router.replace('/(tabs)');
@@ -44,7 +33,7 @@ export default function AuthCallbackScreen() {
 
   return (
     <View style={styles.container}>
-      <ActivityIndicator size="large" />
+      <AppLoadingIndicator size="large" />
     </View>
   );
 }

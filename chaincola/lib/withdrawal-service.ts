@@ -32,11 +32,57 @@ function getChaincolaTransferUrl(): string {
 // Withdrawal fee percentage (3%)
 const WITHDRAWAL_FEE_PERCENTAGE = 0.03;
 
+/** Bank transfer initiation: Supabase + Flutterwave can exceed 30s under load; avoid false timeouts. */
+const TRANSFER_INITIATE_TIMEOUT_MS = 90_000;
+
 /**
  * Calculate withdrawal fee (3% of amount)
  */
 export function calculateWithdrawalFee(amount: number): number {
   return Math.round(amount * WITHDRAWAL_FEE_PERCENTAGE * 100) / 100; // Round to 2 decimal places
+}
+
+/** Fee (3%) and total debited from wallet (payout + fee). */
+export function withdrawalFeeAndTotal(amount: number): { fee: number; total: number } {
+  const fee = calculateWithdrawalFee(amount);
+  return { fee, total: amount + fee };
+}
+
+/**
+ * Largest bank payout `amount` such that `amount + fee(amount) <= availableBalance`.
+ * Uses the same fee rounding as `submitWithdrawal`.
+ */
+export function maxWithdrawalPayoutWithinBalance(availableBalance: number): number {
+  if (!(availableBalance > 0) || !Number.isFinite(availableBalance)) return 0;
+  let lo = 0;
+  let hi = availableBalance;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    const { total } = withdrawalFeeAndTotal(mid);
+    if (total <= availableBalance + 1e-6) lo = mid;
+    else hi = mid;
+  }
+  let payout = Math.floor(lo * 100) / 100;
+  while (payout > 0 && withdrawalFeeAndTotal(payout).total > availableBalance) {
+    payout = Math.floor((payout - 0.01) * 100) / 100;
+  }
+  return Math.max(0, payout);
+}
+
+/** Clamp requested payout so amount + fee never exceeds `availableBalance`. */
+export function clampWithdrawalPayoutToBalance(requested: number, availableBalance: number): number {
+  if (!(requested > 0) || !Number.isFinite(requested)) return 0;
+  const capped = Math.min(requested, maxWithdrawalPayoutWithinBalance(availableBalance));
+  return clampWithdrawalPayoutToBalanceInner(capped, availableBalance);
+}
+
+function clampWithdrawalPayoutToBalanceInner(payout: number, availableBalance: number): number {
+  let p = Math.floor(payout * 100) / 100;
+  for (let i = 0; i < 100000 && p > 0; i++) {
+    if (withdrawalFeeAndTotal(p).total <= availableBalance) return p;
+    p = Math.floor((p - 0.01) * 100) / 100;
+  }
+  return 0;
 }
 
 /**
@@ -50,17 +96,11 @@ async function sendWithdrawalPushNotification(
   withdrawalId: string
 ): Promise<void> {
   try {
-    const title = status === 'processing' 
-      ? 'Withdrawal Submitted' 
-      : status === 'completed' 
-      ? 'Withdrawal Completed' 
-      : 'Withdrawal Failed';
-    
-    const body = status === 'processing'
-      ? `Your withdrawal of ₦${amount.toLocaleString()} has been submitted. Fee: ₦${feeAmount.toLocaleString()}`
-      : status === 'completed'
-      ? `Your withdrawal of ₦${amount.toLocaleString()} has been completed successfully.`
-      : `Your withdrawal of ₦${amount.toLocaleString()} has failed. Please contact support.`;
+    const isFailed = status === 'failed';
+    const title = isFailed ? 'Transfer unsuccessful' : 'Transfer successful';
+    const body = isFailed
+      ? `Your bank transfer of ₦${amount.toLocaleString()} could not be completed. Please contact support if you need help.`
+      : `Your bank transfer of ₦${amount.toLocaleString()} was successful. Fee: ₦${feeAmount.toLocaleString()}.`;
 
     const response = await fetch(`${supabaseUrl}/functions/v1/send-push-notification`, {
       method: 'POST',
@@ -109,17 +149,12 @@ async function sendWithdrawalEmailNotification(
   accountNumber: string
 ): Promise<void> {
   try {
-    const subject = status === 'processing'
-      ? 'Withdrawal Request Submitted'
-      : status === 'completed'
-      ? 'Withdrawal Completed Successfully'
-      : 'Withdrawal Request Failed';
+    const isFailed = status === 'failed';
+    const subject = isFailed ? 'Bank transfer unsuccessful' : 'Transfer successful';
 
-    const statusText = status === 'processing'
-      ? 'submitted and is being processed'
-      : status === 'completed'
-      ? 'completed successfully'
-      : 'failed';
+    const introParagraph = isFailed
+      ? 'Your bank transfer could not be completed.'
+      : 'Your bank transfer was successful.';
 
     const html = `
       <!DOCTYPE html>
@@ -136,7 +171,7 @@ async function sendWithdrawalEmailNotification(
           <div style="background: #FFFFFF; padding: 30px; border: 1px solid #E5E7EB; border-top: none; border-radius: 0 0 10px 10px;">
             <h2 style="color: #11181C; margin-top: 0;">${subject}</h2>
             <p>Hello,</p>
-            <p>Your withdrawal request has been ${statusText}.</p>
+            <p>${introParagraph}</p>
             <div style="background: #F9FAFB; padding: 20px; border-radius: 8px; margin: 20px 0;">
               <table style="width: 100%; border-collapse: collapse;">
                 <tr>
@@ -162,15 +197,14 @@ async function sendWithdrawalEmailNotification(
                 <tr>
                   <td style="padding: 8px 0; color: #6B7280;">Status:</td>
                   <td style="padding: 8px 0; text-align: right;">
-                    <span style="padding: 4px 12px; border-radius: 4px; background: ${status === 'completed' ? '#D1FAE5' : status === 'processing' ? '#DBEAFE' : '#FEE2E2'}; color: ${status === 'completed' ? '#065F46' : status === 'processing' ? '#1E40AF' : '#991B1B'};">
-                      ${status.toUpperCase()}
+                    <span style="padding: 4px 12px; border-radius: 4px; background: ${isFailed ? '#FEE2E2' : '#D1FAE5'}; color: ${isFailed ? '#991B1B' : '#065F46'};">
+                      ${isFailed ? 'UNSUCCESSFUL' : 'SUCCESSFUL'}
                     </span>
                   </td>
                 </tr>
               </table>
             </div>
-            ${status === 'processing' ? '<p>Your withdrawal is being processed and the funds will be transferred to your bank account instantly.</p>' : ''}
-            ${status === 'failed' ? '<p>If you have any questions or concerns, please contact our support team.</p>' : ''}
+            ${isFailed ? '<p>If you have any questions or concerns, please contact our support team.</p>' : ''}
             <p style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #E5E7EB; color: #6B7280; font-size: 14px;">
               Best regards,<br>
               The ChainCola Team
@@ -767,26 +801,21 @@ async function initiateFlutterwaveTransfer(
       withdrawalId,
     });
 
-    // Call chaincola-transfer with timeout
+    const timeoutMs = TRANSFER_INITIATE_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     let response: Response;
-    const timeoutMs = 30000; // 30 second timeout
-
     try {
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Request timeout - transfer service did not respond within 30 seconds')), timeoutMs);
+      response = await fetch(transferFunctionUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(transferRequest),
+        signal: controller.signal,
       });
-
-      response = await Promise.race([
-        fetch(transferFunctionUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify(transferRequest),
-        }),
-        timeoutPromise,
-      ]) as Response;
     } catch (networkError: any) {
       console.error('❌ Network error calling Flutterwave transfer API:', {
         error: networkError.message,
@@ -795,21 +824,34 @@ async function initiateFlutterwaveTransfer(
         url: transferFunctionUrl,
       });
       
-      // Determine error type for better user messaging
-      let errorMessage = 'Unable to connect to transfer service. ';
-      if (networkError.message?.includes('timeout')) {
-        errorMessage += 'The service took too long to respond. ';
+      // Build a single readable sentence; avoid "timed outYour funds" (missing space / period).
+      const parts: string[] = ['Unable to connect to the transfer service.'];
+      if (
+        networkError.name === 'AbortError' ||
+        networkError.message?.includes('timeout') ||
+        networkError.message?.includes('aborted')
+      ) {
+        parts.push(`The service took too long to respond (over ${Math.round(timeoutMs / 1000)}s).`);
       } else if (networkError.message?.includes('Network request failed')) {
-        errorMessage += 'Please check your internet connection. ';
+        parts.push('Please check your internet connection.');
       } else {
-        errorMessage += networkError.message || 'Network error occurred. ';
+        let m = String(networkError.message || 'Network error occurred.').trim();
+        if (m && !/[.!?]$/.test(m)) {
+          m += '.';
+        }
+        if (m) {
+          parts.push(m);
+        }
       }
-      errorMessage += 'Your funds will be automatically refunded.';
+      parts.push('Your funds will be automatically refunded.');
+      const errorMessage = parts.join(' ');
       
       return {
         success: false,
         error: errorMessage,
       };
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     let result: FlutterwaveTransferResponse;
@@ -1013,6 +1055,10 @@ export async function submitWithdrawal(
       p_user_id: userId,
       p_amount: totalAmount, // Deduct amount + fee
       p_currency: 'NGN',
+      p_ledger_ref_type: 'withdrawal',
+      p_ledger_ref_id: withdrawal.id,
+      p_ledger_payout_amount: withdrawalData.amount,
+      p_ledger_fee_amount: feeAmount,
     });
 
     if (balanceError) {
@@ -1082,6 +1128,10 @@ export async function submitWithdrawal(
         p_user_id: userId,
         p_amount: totalAmount, // Refund amount + fee
         p_currency: 'NGN',
+        p_ledger_ref_type: 'withdrawal',
+        p_ledger_ref_id: withdrawal.id,
+        p_ledger_payout_amount: withdrawalData.amount,
+        p_ledger_fee_amount: feeAmount,
       });
 
       if (refundError) {
@@ -1166,11 +1216,14 @@ export async function submitWithdrawal(
         console.log('✅ Created FAILED transaction record for withdrawal');
       }
 
+      const transferErr = (transferResult.error || 'Transfer initiation failed')
+        .replace(/\s*Your funds will be automatically refunded\.?\s*$/i, '')
+        .trim();
       return {
         success: false,
         error: refundError
-          ? `Transfer failed and automatic refund failed. Please contact support. Error: ${transferResult.error || 'Transfer initiation failed'}`
-          : transferResult.error || 'Failed to initiate transfer. Amount has been refunded to your wallet.',
+          ? `Transfer failed and automatic refund failed. Please contact support. Error: ${transferErr}`
+          : `The bank transfer could not be started (${transferErr}). Your wallet has been refunded the full amount including the fee. You can try again in a few minutes.`,
       };
     }
 
@@ -1272,24 +1325,32 @@ export async function submitWithdrawal(
       // This is not critical, the webhook will handle status updates
     }
 
-    // Send notification matching the actual transfer state (Submitted vs Completed).
-    try {
-      await Promise.all([
-        sendWithdrawalPushNotification(userId, withdrawalData.amount, feeAmount, notificationStatus, withdrawal.id),
-        userEmail && sendWithdrawalEmailNotification(
-          userId,
-          userEmail,
-          withdrawalData.amount,
-          feeAmount,
-          notificationStatus,
-          withdrawal.id,
-          withdrawalData.bank_name,
-          withdrawalData.account_number
-        ),
-      ]);
-    } catch (notificationError) {
-      console.error('⚠️ Error sending notifications (non-critical):', notificationError);
-      // Don't fail withdrawal if notifications fail
+    // Push + email use "Transfer successful" copy for both processing and completed.
+    // (If Flutterwave later confirms completion, webhook may send a second success notice.)
+    if (
+      notificationStatus === 'completed' ||
+      notificationStatus === 'failed' ||
+      notificationStatus === 'processing'
+    ) {
+      try {
+        await Promise.all([
+          sendWithdrawalPushNotification(userId, withdrawalData.amount, feeAmount, notificationStatus, withdrawal.id),
+          userEmail &&
+            sendWithdrawalEmailNotification(
+              userId,
+              userEmail,
+              withdrawalData.amount,
+              feeAmount,
+              notificationStatus,
+              withdrawal.id,
+              withdrawalData.bank_name,
+              withdrawalData.account_number
+            ),
+        ]);
+      } catch (notificationError) {
+        console.error('⚠️ Error sending notifications (non-critical):', notificationError);
+        // Don't fail withdrawal if notifications fail
+      }
     }
 
     console.log('✅ Withdrawal and transfer initiated successfully:', {

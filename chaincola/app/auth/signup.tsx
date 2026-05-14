@@ -9,7 +9,6 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,6 +17,9 @@ import { Link, router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { validateReferralCode } from '@/lib/referral-service';
 import { checkDuplicateUser } from '@/lib/user-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
+const SIGNUP_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function SignUpScreen() {
   const [name, setName] = useState('');
@@ -32,6 +34,11 @@ export default function SignUpScreen() {
   const [referralStatus, setReferralStatus] = useState<'idle' | 'valid' | 'invalid'>('idle');
   const [referralError, setReferralError] = useState<string>('');
   const referralValidationTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  type Availability = 'idle' | 'checking' | 'available' | 'taken' | 'error';
+  const [emailAvailability, setEmailAvailability] = useState<Availability>('idle');
+  const [phoneAvailability, setPhoneAvailability] = useState<Availability>('idle');
+  const emailAvailabilityTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const phoneAvailabilityTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { signUp } = useAuth();
 
   // Validate referral code as user types (with debounce)
@@ -75,6 +82,72 @@ export default function SignUpScreen() {
     };
   }, [referralCode]);
 
+  // Debounced duplicate email check (RPC; works for anonymous users)
+  useEffect(() => {
+    const trimmed = email.trim();
+    if (trimmed.length === 0) {
+      setEmailAvailability('idle');
+      return;
+    }
+    if (!SIGNUP_EMAIL_REGEX.test(trimmed)) {
+      setEmailAvailability('idle');
+      return;
+    }
+
+    if (emailAvailabilityTimeout.current) {
+      clearTimeout(emailAvailabilityTimeout.current);
+    }
+
+    setEmailAvailability('idle');
+
+    emailAvailabilityTimeout.current = setTimeout(async () => {
+      setEmailAvailability('checking');
+      const result = await checkDuplicateUser(trimmed, '');
+      if (result.error) {
+        setEmailAvailability('error');
+        return;
+      }
+      setEmailAvailability(result.emailExists ? 'taken' : 'available');
+    }, 550);
+
+    return () => {
+      if (emailAvailabilityTimeout.current) {
+        clearTimeout(emailAvailabilityTimeout.current);
+      }
+    };
+  }, [email]);
+
+  // Debounced duplicate phone check (digits length >= 10)
+  useEffect(() => {
+    const digits = phoneNumber.replace(/\D/g, '');
+    if (digits.length < 10) {
+      setPhoneAvailability('idle');
+      return;
+    }
+
+    if (phoneAvailabilityTimeout.current) {
+      clearTimeout(phoneAvailabilityTimeout.current);
+    }
+
+    setPhoneAvailability('idle');
+
+    phoneAvailabilityTimeout.current = setTimeout(async () => {
+      setPhoneAvailability('checking');
+      const result = await checkDuplicateUser('', phoneNumber.trim());
+      if (result.error) {
+        setPhoneAvailability('error');
+        return;
+      }
+      setPhoneAvailability(result.phoneExists ? 'taken' : 'available');
+    }, 550);
+
+    return () => {
+      if (phoneAvailabilityTimeout.current) {
+        clearTimeout(phoneAvailabilityTimeout.current);
+      }
+    };
+  }, [phoneNumber]);
+
   const handleSignUp = async () => {
     // Validation
     if (!name.trim()) {
@@ -103,17 +176,37 @@ export default function SignUpScreen() {
     }
 
     // Email format validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
+    if (!SIGNUP_EMAIL_REGEX.test(email.trim())) {
       Alert.alert('Error', 'Please enter a valid email address');
       return;
     }
 
-    // Check for duplicate email and phone number before signup
+    if (emailAvailability === 'checking' || phoneAvailability === 'checking') {
+      Alert.alert('Please wait', 'Still checking whether your email and phone are available.');
+      return;
+    }
+
+    if (emailAvailability === 'taken') {
+      Alert.alert(
+        'Email Already Exists',
+        'An account with this email address already exists. Please sign in instead or use a different email.'
+      );
+      return;
+    }
+
+    if (phoneAvailability === 'taken') {
+      Alert.alert(
+        'Phone Number Already Exists',
+        'An account with this phone number already exists. Please use a different phone number or sign in instead.'
+      );
+      return;
+    }
+
+    // Check for duplicate email and phone number before signup (authoritative)
     setLoading(true);
     try {
       const duplicateCheck = await checkDuplicateUser(email.trim(), phoneNumber.trim());
-      
+
       if (duplicateCheck.emailExists) {
         Alert.alert(
           'Email Already Exists',
@@ -133,20 +226,22 @@ export default function SignUpScreen() {
       }
     } catch (error: any) {
       console.error('Error checking for duplicates:', error);
+      setLoading(false);
       // Continue with signup - Supabase will catch duplicates if check fails
-      // This prevents blocking signup due to network issues
     }
 
     // Validate referral code if provided
     if (referralCode.trim().length > 0) {
       if (referralStatus === 'invalid') {
         Alert.alert('Invalid Referral Code', referralError || 'Please enter a valid referral code or leave it empty.');
+        setLoading(false);
         return;
       }
 
       // If still validating, wait a bit
       if (validatingReferral) {
         Alert.alert('Please wait', 'Validating referral code...');
+        setLoading(false);
         return;
       }
 
@@ -154,6 +249,7 @@ export default function SignUpScreen() {
       const validation = await validateReferralCode(referralCode.trim());
       if (!validation.isValid) {
         Alert.alert('Invalid Referral Code', validation.error || 'Please enter a valid referral code or leave it empty.');
+        setLoading(false);
         return;
       }
     }
@@ -280,20 +376,46 @@ export default function SignUpScreen() {
                 >
                   Email Address
                 </ThemedText>
-                <View style={styles.inputWrapper}>
-                  <MaterialIcons name="email" size={20} color="#6B7280" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Enter your email"
-                    placeholderTextColor="#9CA3AF"
-                    value={email}
-                    onChangeText={setEmail}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoComplete="email"
-                    numberOfLines={1}
-                  />
+                <View style={styles.referralInputWrapper}>
+                  <View style={[
+                    styles.inputWrapper,
+                    emailAvailability === 'available' && styles.inputWrapperValid,
+                    emailAvailability === 'taken' && styles.inputWrapperInvalid,
+                  ]}>
+                    <MaterialIcons name="email" size={20} color="#6B7280" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Enter your email"
+                      placeholderTextColor="#9CA3AF"
+                      value={email}
+                      onChangeText={setEmail}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoComplete="email"
+                      numberOfLines={1}
+                    />
+                  </View>
+                  {emailAvailability === 'checking' && (
+                    <View style={styles.validationIndicator}>
+                      <AppLoadingIndicator size="small" />
+                    </View>
+                  )}
+                  {emailAvailability === 'available' && (
+                    <View style={styles.validationIndicator}>
+                      <MaterialIcons name="check-circle" size={20} color="#10B981" />
+                    </View>
+                  )}
+                  {emailAvailability === 'taken' && (
+                    <View style={styles.validationIndicator}>
+                      <MaterialIcons name="error" size={20} color="#EF4444" />
+                    </View>
+                  )}
                 </View>
+                {emailAvailability === 'taken' && (
+                  <ThemedText style={styles.fieldErrorText} numberOfLines={2}>
+                    This email is already registered. Sign in or use another email.
+                  </ThemedText>
+                )}
               </View>
 
               <View style={styles.inputContainer}>
@@ -305,19 +427,45 @@ export default function SignUpScreen() {
                 >
                   Phone Number
                 </ThemedText>
-                <View style={styles.inputWrapper}>
-                  <MaterialIcons name="phone" size={20} color="#6B7280" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Enter your phone number"
-                    placeholderTextColor="#9CA3AF"
-                    value={phoneNumber}
-                    onChangeText={setPhoneNumber}
-                    keyboardType="phone-pad"
-                    autoComplete="tel"
-                    numberOfLines={1}
-                  />
+                <View style={styles.referralInputWrapper}>
+                  <View style={[
+                    styles.inputWrapper,
+                    phoneAvailability === 'available' && styles.inputWrapperValid,
+                    phoneAvailability === 'taken' && styles.inputWrapperInvalid,
+                  ]}>
+                    <MaterialIcons name="phone" size={20} color="#6B7280" style={styles.inputIcon} />
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Enter your phone number"
+                      placeholderTextColor="#9CA3AF"
+                      value={phoneNumber}
+                      onChangeText={setPhoneNumber}
+                      keyboardType="phone-pad"
+                      autoComplete="tel"
+                      numberOfLines={1}
+                    />
+                  </View>
+                  {phoneAvailability === 'checking' && (
+                    <View style={styles.validationIndicator}>
+                      <AppLoadingIndicator size="small" />
+                    </View>
+                  )}
+                  {phoneAvailability === 'available' && (
+                    <View style={styles.validationIndicator}>
+                      <MaterialIcons name="check-circle" size={20} color="#10B981" />
+                    </View>
+                  )}
+                  {phoneAvailability === 'taken' && (
+                    <View style={styles.validationIndicator}>
+                      <MaterialIcons name="error" size={20} color="#EF4444" />
+                    </View>
+                  )}
                 </View>
+                {phoneAvailability === 'taken' && (
+                  <ThemedText style={styles.fieldErrorText} numberOfLines={2}>
+                    This phone number is already registered. Use a different number or sign in.
+                  </ThemedText>
+                )}
               </View>
 
               <View style={styles.inputContainer}>
@@ -360,7 +508,7 @@ export default function SignUpScreen() {
                   </View>
                   {validatingReferral && (
                     <View style={styles.validationIndicator}>
-                      <ActivityIndicator size="small" color="#6B46C1" />
+                      <AppLoadingIndicator size="small" />
                     </View>
                   )}
                   {referralStatus === 'valid' && !validatingReferral && (
@@ -459,7 +607,7 @@ export default function SignUpScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <>
                       <MaterialIcons name="person-add" size={20} color="#FFFFFF" />
@@ -696,6 +844,12 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 12,
     color: '#FCA5A5',
+    marginTop: 6,
+    marginLeft: 4,
+  },
+  fieldErrorText: {
+    fontSize: 12,
+    color: '#DC2626',
     marginTop: 6,
     marginLeft: 4,
   },

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
@@ -10,6 +10,7 @@ import { syncPendingWalletFundings } from '@/lib/payment-service';
 import { getUserTransactions, TransactionListItem } from '@/lib/transaction-service';
 import { createQuickDemoTransactions } from '@/lib/demo-transactions-service';
 import { Alert } from 'react-native';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function TransactionsScreen() {
   const { user } = useAuth();
@@ -77,7 +78,7 @@ export default function TransactionsScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading transactions...</ThemedText>
         </View>
       </ThemedView>

@@ -6,6 +6,7 @@ import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { deleteBiometricCredentials } from '@/lib/biometric-service';
 import { createReferralRelationship, validateReferralCode } from '@/lib/referral-service';
 import { getUserProfile, updateUserProfile } from '@/lib/user-service';
+import { ensureUserWallets } from '@/lib/crypto-wallet-service';
 
 /** Stale AsyncStorage session (revoked user, rotated project, cleared server sessions). */
 function isInvalidStoredSessionError(err: unknown): boolean {
@@ -44,6 +45,8 @@ interface AuthContextType {
   resetPassword: (email: string) => Promise<{ error: any }>;
   resendVerificationEmail: (email: string, type?: 'signup' | 'recovery') => Promise<{ error: any }>;
   verifyOTP: (email: string, token: string, type: 'signup' | 'email_change' | 'recovery') => Promise<{ error: any }>;
+  /** Updates password for the current session (e.g. after recovery OTP or magic link). */
+  updatePassword: (newPassword: string) => Promise<{ error: any }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -54,7 +57,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   // Track if we're currently in a signup process to prevent onAuthStateChange from interfering
   const isSigningUpRef = useRef(false);
-  const signupUserIdsRef = useRef<Set<string>>(new Set());
 
   // Convert Supabase user to our User type
   const convertSupabaseUser = useCallback((supabaseUser: SupabaseUser | null): User | null => {
@@ -121,45 +123,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const userId = currentSession?.user?.id;
-      if (userId && signupUserIdsRef.current.has(userId)) {
-        console.log('⏭️ Skipping auth state change for newly signed up user');
-        return;
-      }
-
       console.log('🔄 Auth state changed:', event, currentSession?.user?.email);
 
       if (currentSession) {
         setSession(currentSession);
         const convertedUser = convertSupabaseUser(currentSession.user);
         setUser(convertedUser);
-        
-        // Ensure user profile exists (but not during signup)
-        if (convertedUser && event !== 'SIGNED_UP') {
-          setTimeout(async () => {
-            try {
-              await ensureUserProfile(convertedUser);
-              
-              // Ensure wallets exist for existing users (create if missing)
-              try {
-                const { ensureUserWallets } = await import('@/lib/crypto-wallet-service');
-                ensureUserWallets('mainnet').then((result) => {
-                  if (result.success && result.created > 0) {
-                    console.log(`✅ Created ${result.created} wallets for existing user`);
-                  } else if (result.success) {
-                    console.log('✅ All wallets already exist for user');
-                  } else {
-                    console.warn(`⚠️ Wallet check had ${result.errors.length} errors:`, result.errors);
-                  }
-                }).catch((walletError) => {
-                  console.error('Error ensuring user wallets:', walletError);
-                });
-              } catch (walletImportError) {
-                console.error('Error importing wallet service:', walletImportError);
-              }
-            } catch (error) {
-              console.error('Error ensuring user profile after auth state change:', error);
-            }
+
+        // Deposit addresses + profile: on real session events only (not every TOKEN_REFRESHED).
+        // `SIGNED_UP` is emitted by GoTrue but not always present on older @supabase auth-js typings.
+        const ev = event as string;
+        const shouldProvision =
+          ev === 'INITIAL_SESSION' || ev === 'SIGNED_IN' || ev === 'SIGNED_UP';
+        if (convertedUser && shouldProvision) {
+          setTimeout(() => {
+            void ensureProfileAndDepositWallets(convertedUser);
           }, 500);
         }
       } else {
@@ -295,6 +273,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  /** Profile + missing BTC/ETH/SOL/XRP deposit addresses (crypto_wallets). Safe to call repeatedly. */
+  const ensureProfileAndDepositWallets = async (userLike: User) => {
+    try {
+      await ensureUserProfile(userLike);
+      const {
+        data: { session },
+        error: sessErr,
+      } = await supabase.auth.getSession();
+      if (sessErr || !session) {
+        console.warn('⚠️ Skipping deposit wallets: no session', sessErr?.message);
+        return;
+      }
+      const result = await ensureUserWallets('mainnet');
+      if (result.created > 0) {
+        console.log(`✅ Provisioned ${result.created} missing deposit wallet(s)`);
+      }
+      if (!result.success && result.errors.length > 0) {
+        console.warn('⚠️ Deposit wallet provisioning issues:', result.errors);
+      }
+    } catch (e) {
+      console.error('ensureProfileAndDepositWallets:', e);
+    }
+  };
+
   const signIn = async (email: string, password: string) => {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -315,15 +317,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const convertedUser = convertSupabaseUser(data.user);
         setUser(convertedUser);
         
-        // Ensure user profile exists after sign-in
         if (convertedUser) {
-          setTimeout(async () => {
-            try {
-              await ensureUserProfile(convertedUser);
-            } catch (error) {
-              console.error('Error ensuring user profile after signin:', error);
-            }
-          }, 500);
+          setTimeout(() => {
+            void ensureProfileAndDepositWallets(convertedUser);
+          }, 600);
         }
       }
 
@@ -374,9 +371,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       if (data.user) {
-        // Track this user ID FIRST to prevent onAuthStateChange from processing it
-        signupUserIdsRef.current.add(data.user.id);
-        
         // The database trigger (handle_new_user) automatically creates the user profile
         // We don't need to manually create it - this avoids RLS issues
         
@@ -413,38 +407,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }, 3000);
         }
 
-        // Create default crypto wallets for the user (in background, AFTER session is confirmed)
+        // With session: provision deposit addresses after auth + profile settle
         if (data.session) {
-          // Session is available immediately - create wallets after delay to ensure session is fully established
-          setTimeout(async () => {
-            try {
-              // Wait to ensure session is fully propagated in Supabase
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              
-              // Verify session is still available before creating wallets
-              const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
-              if (sessionError || !currentSession) {
-                console.warn('⚠️ No session available for wallet creation, skipping:', sessionError?.message);
-                return;
-              }
-              
-              console.log('🔄 Creating default wallets with confirmed session...');
-              const { createDefaultWallets } = await import('@/lib/crypto-wallet-service');
-              const result = await createDefaultWallets(data.user.id, 'mainnet');
-              if (result.success) {
-                console.log(`✅ Created ${result.created} default wallets for user`);
-              } else if (result.errors.length > 0) {
-                console.warn(`⚠️ Wallet creation had ${result.errors.length} errors:`, result.errors);
-              }
-            } catch (walletError) {
-              console.error('Error creating default wallets:', walletError);
-              // Don't fail signup if wallet creation fails
-            }
-          }, 3000);
+          const u = convertSupabaseUser(data.user);
+          if (u) {
+            setTimeout(() => {
+              void ensureProfileAndDepositWallets(u);
+            }, 2500);
+          }
         } else {
-          // No session yet (email confirmation required) - wallets will be created after email verification
-          console.log('ℹ️ Wallet creation deferred until email verification (no session yet)');
-          // User ID is already tracked in signupUserIdsRef
+          console.log('ℹ️ Deposit wallets will be created after email verification or first sign-in');
         }
 
         // Set session if available (may not be available if email confirmation is required)
@@ -528,7 +500,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resetPassword = async (email: string) => {
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      const normalizedEmail = email.trim().toLowerCase();
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
         redirectTo: getSupabaseAuthRedirectTo('auth/callback'),
       });
       
@@ -545,9 +518,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const resendVerificationEmail = async (email: string, type: 'signup' | 'recovery' = 'signup') => {
     try {
       const emailRedirectTo = getSupabaseAuthRedirectTo('auth/callback');
+      const normalizedEmail = email.trim().toLowerCase();
+
+      // Drop any local session from a pending sign-up (or another tab). Without this, GoTrue
+      // can treat repeated resend as the same pending user and keep sending the same OTP until it expires.
+      const { error: signOutErr } = await supabase.auth.signOut({ scope: 'local' });
+      if (signOutErr) {
+        console.warn('resendVerificationEmail: local signOut before resend:', signOutErr.message);
+      }
+
+      // Let AsyncStorage / auth listener flush so the next request is not tied to a stale JWT.
+      await new Promise((resolve) => setTimeout(resolve, 320));
+
+      // Password recovery is not a valid `resend()` type (only signup, email_change, sms, phone_change).
+      // Resend recovery mail by triggering the same flow as "Forgot password".
+      if (type === 'recovery') {
+        const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+          redirectTo: emailRedirectTo,
+        });
+        if (error) {
+          return { error };
+        }
+        return { error: null };
+      }
+
       const { error } = await supabase.auth.resend({
-        type: type === 'recovery' ? 'recovery' : 'signup',
-        email: email.trim(),
+        type: 'signup',
+        email: normalizedEmail,
         options: {
           emailRedirectTo,
         },
@@ -565,17 +562,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const verifyOTP = async (email: string, token: string, type: 'signup' | 'email_change' | 'recovery') => {
     try {
-      // Map our type to Supabase type
-      let supabaseType: 'signup' | 'email_change' | 'recovery' = 'signup';
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedToken = token.trim();
+
+      // GoTrue email OTP types (see EmailOtpType in @supabase/auth-js):
+      // - After signUp(), the email OTP (6 digits; see chaincola-web/supabase/config.toml [auth.email] otp_length) is verified with type `email`, not `signup`.
+      // - Using `signup` here often fails with confusing "expired / invalid" errors.
+      let supabaseType: 'email' | 'email_change' | 'recovery' = 'email';
       if (type === 'email_change') {
         supabaseType = 'email_change';
       } else if (type === 'recovery') {
         supabaseType = 'recovery';
+      } else {
+        supabaseType = 'email';
       }
 
       const { data, error } = await supabase.auth.verifyOtp({
-        email: email.trim(),
-        token: token.trim(),
+        email: normalizedEmail,
+        token: normalizedToken,
         type: supabaseType,
       });
 
@@ -583,52 +587,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { error };
       }
 
-      if (data.session && data.user) {
-        setSession(data.session);
-        const convertedUser = convertSupabaseUser(data.user);
-        setUser(convertedUser);
-        
-        // Remove from signup tracking since email is now verified
-        signupUserIdsRef.current.delete(data.user.id);
-        
-        // Ensure user profile exists after OTP verification (database trigger should have created it)
-        if (convertedUser) {
-          setTimeout(async () => {
-            try {
-              await ensureUserProfile(convertedUser);
-              
-              // Create wallets now that email is verified and session is active (only for signup)
-              if (type === 'signup') {
-                try {
-                  // Wait to ensure session is fully propagated
-                  await new Promise(resolve => setTimeout(resolve, 2000));
-                  
-                  // Verify session before creating wallets
-                  const { data: { session: currentSession }, error: sessionError } = await supabase.auth.getSession();
-                  if (sessionError || !currentSession) {
-                    console.warn('⚠️ No session available for wallet creation after OTP, skipping');
-                    return;
-                  }
-                  
-                  console.log('🔄 Creating default wallets after email verification...');
-                  const { createDefaultWallets } = await import('@/lib/crypto-wallet-service');
-                  const result = await createDefaultWallets(data.user.id, 'mainnet');
-                  if (result.success) {
-                    console.log(`✅ Created ${result.created} default wallets after email verification`);
-                  } else if (result.errors.length > 0) {
-                    console.warn(`⚠️ Wallet creation had ${result.errors.length} errors:`, result.errors);
-                  }
-                } catch (walletError) {
-                  console.error('Error creating default wallets after email verification:', walletError);
-                }
-              }
-            } catch (error) {
-              console.error('Error ensuring user profile after OTP verification:', error);
-            }
-          }, 2000);
+      let activeSession = data.session ?? null;
+      let activeUser = data.user ?? null;
+
+      if (!activeSession) {
+        await new Promise((r) => setTimeout(r, 150));
+        const { data: refreshed, error: refreshErr } = await supabase.auth.getSession();
+        if (!refreshErr && refreshed.session) {
+          activeSession = refreshed.session;
+          activeUser = refreshed.session.user;
         }
       }
 
+      if (!activeSession || !activeUser) {
+        return {
+          error: {
+            message:
+              'Verification succeeded but no session was created. Try again, or open the link in your email to continue.',
+          },
+        };
+      }
+
+      setSession(activeSession);
+      const convertedUser = convertSupabaseUser(activeUser);
+      setUser(convertedUser);
+
+      if (convertedUser) {
+        setTimeout(() => {
+          void ensureProfileAndDepositWallets(convertedUser);
+        }, 1200);
+      }
+
+      return { error: null };
+    } catch (error: any) {
+      return { error };
+    }
+  };
+
+  const updatePassword = async (newPassword: string) => {
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+      if (error) {
+        return { error };
+      }
       return { error: null };
     } catch (error: any) {
       return { error };
@@ -646,6 +649,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     resetPassword,
     resendVerificationEmail,
     verifyOTP,
+    updatePassword,
   };
 
   return (

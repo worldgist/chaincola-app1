@@ -31,6 +31,58 @@ if (!supabaseAnonKey || supabaseAnonKey === '' || supabaseAnonKey === 'placehold
   console.error(`Get your key from: https://app.supabase.com/project/${SUPABASE_PROJECT_REF}/settings/api`);
 }
 
+function requestHref(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+/** Merge timeout + caller signal so GoTrue can cancel superseded requests without breaking fetch. */
+function mergeWithTimeoutSignal(
+  incoming: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void } {
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+  const clearTimer = () => clearTimeout(timeoutId);
+
+  if (!incoming) {
+    return {
+      signal: timeoutController.signal,
+      cleanup: clearTimer,
+    };
+  }
+  if (incoming.aborted) {
+    clearTimer();
+    const already = new AbortController();
+    already.abort();
+    return { signal: already.signal, cleanup: () => {} };
+  }
+
+  const anyFn = (AbortSignal as typeof AbortSignal & { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyFn === 'function') {
+    return {
+      signal: anyFn([incoming, timeoutController.signal]),
+      cleanup: clearTimer,
+    };
+  }
+
+  const merged = new AbortController();
+  const forward = () => {
+    if (!merged.signal.aborted) merged.abort();
+  };
+  incoming.addEventListener('abort', forward);
+  timeoutController.signal.addEventListener('abort', forward);
+  return {
+    signal: merged.signal,
+    cleanup: () => {
+      clearTimer();
+      incoming.removeEventListener('abort', forward);
+      timeoutController.signal.removeEventListener('abort', forward);
+    },
+  };
+}
+
 export const supabase = createClient(
   supabaseUrl,
   supabaseAnonKey || 'placeholder-key',
@@ -48,20 +100,18 @@ export const supabase = createClient(
       },
       // Increase timeout for mobile networks (60 seconds for storage uploads, 30 seconds for other operations)
       fetch: (url, options = {}) => {
-        const controller = new AbortController();
-        // Use longer timeout for storage operations (file uploads)
-        const isStorageOperation = url.includes('/storage/v1/') || url.includes('/storage/v1/object/');
-        const isRestQuery = url.includes('/rest/v1/');
+        const href = requestHref(url);
+        const isStorageOperation = href.includes('/storage/v1/') || href.includes('/storage/v1/object/');
+        const isRestQuery = href.includes('/rest/v1/');
+        const isAuth = href.includes('/auth/v1/');
         // PostgREST + tunnel / slow mobile: 30s aborts were causing DOMException "AbortError" on wallet loads
-        const timeout = isStorageOperation ? 60000 : isRestQuery ? 55000 : 30000;
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-        
+        const timeoutMs = isStorageOperation ? 60000 : isRestQuery ? 55000 : isAuth ? 60000 : 30000;
+        const { signal, cleanup } = mergeWithTimeoutSignal(options.signal, timeoutMs);
+
         return fetch(url, {
           ...options,
-          signal: controller.signal,
-        }).finally(() => {
-          clearTimeout(timeoutId);
-        });
+          signal,
+        }).finally(cleanup);
       },
     },
   }

@@ -3602,6 +3602,42 @@ export type Database = {
         }
         Returns: boolean
       }
+      admin_credit_system_wallet: {
+        Args: {
+          p_admin_user_id: string
+          p_amount: number
+          p_asset: string
+          p_reason?: string | null
+        }
+        Returns: {
+          btc_inventory: number
+          btc_main_address: string | null
+          btc_pending_inventory: number
+          created_at: string
+          eth_inventory: number
+          eth_main_address: string | null
+          eth_pending_inventory: number
+          id: number
+          ngn_float_balance: number
+          ngn_pending_float: number
+          sol_inventory: number
+          sol_main_address: string | null
+          sol_pending_inventory: number
+          updated_at: string
+          usdc_eth_main_address: string | null
+          usdc_inventory: number
+          usdc_pending_inventory: number
+          usdc_sol_main_address: string | null
+          usdt_eth_main_address: string | null
+          usdt_inventory: number
+          usdt_pending_inventory: number
+          usdt_sol_main_address: string | null
+          usdt_tron_main_address: string | null
+          xrp_inventory: number
+          xrp_main_address: string | null
+          xrp_pending_inventory: number
+        }[]
+      }
       admin_debit_balance: {
         Args: {
           p_admin_user_id: string

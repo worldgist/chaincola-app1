@@ -9,7 +9,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,9 +17,18 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import * as Clipboard from 'expo-clipboard';
-import { getUserCryptoBalances, getCryptoPrice, formatCryptoBalance, syncSolBalanceFromBlockchain, creditSolDepositTransaction } from '@/lib/crypto-price-service';
+import {
+  getUserCryptoBalances,
+  getCryptoPrice,
+  getDisplaySellRateNgnPerUsd,
+  formatCryptoBalance,
+  syncSolBalanceFromBlockchain,
+  creditSolDepositTransaction,
+} from '@/lib/crypto-price-service';
 import { getSellBtcQuote, getSellEthQuote, getSellSolQuote, getSellXrpQuote, executeSellBtc, executeSellEth, executeSellSol, executeSellXrp, instantSellCrypto } from '@/lib/buy-sell-service';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 const cryptoList = [
   { id: '1', name: 'Bitcoin', symbol: 'BTC', logo: require('@/assets/images/bitcoin.png') },
@@ -96,7 +104,11 @@ export default function SellCryptoScreen() {
       return;
     }
     fetchBalance();
-    fetchExchangeRate();
+    fetchExchangeRate(false);
+    const id = setInterval(() => {
+      void fetchExchangeRate(true);
+    }, 2500);
+    return () => clearInterval(id);
   }, [user, selectedCrypto]);
 
   const fetchBalance = async () => {
@@ -138,13 +150,15 @@ export default function SellCryptoScreen() {
     }
   };
 
-  const fetchExchangeRate = async () => {
-    setFetchingPrice(true);
-    setPriceError(null);
+  const fetchExchangeRate = async (forceRefresh = false) => {
+    if (!forceRefresh) {
+      setFetchingPrice(true);
+      setPriceError(null);
+    }
     try {
       const [cryptoRes, usdtRes] = await Promise.all([
-        getCryptoPrice(selectedCrypto.symbol),
-        getCryptoPrice('USDT'),
+        getCryptoPrice(selectedCrypto.symbol, { forceRefresh }),
+        getCryptoPrice('USDT', { forceRefresh }),
       ]);
       const { price, error } = cryptoRes;
       if (error || !price) {
@@ -157,11 +171,10 @@ export default function SellCryptoScreen() {
       if (sellRateNgn > 0) {
         setExchangeRate(sellRateNgn);
         setPriceError(null);
-        const usdtSellNgn = usdtRes.price?.bid ?? 0;
-        const usdToNgn = usdtSellNgn > 0 ? usdtSellNgn : 1650;
+        const usdToNgn = getDisplaySellRateNgnPerUsd(usdtRes.price ?? null);
         setExchangeRateUSD(sellRateNgn / usdToNgn);
         setUsdToNgnRate(usdToNgn);
-        setSellRatePerUsdNgn(usdtSellNgn > 0 ? usdtSellNgn : null);
+        setSellRatePerUsdNgn(usdToNgn);
       } else {
         setPriceError(`No sell rate for ${selectedCrypto.symbol}`);
         setExchangeRate(null);
@@ -172,7 +185,9 @@ export default function SellCryptoScreen() {
       setExchangeRate(null);
       setSellRatePerUsdNgn(null);
     } finally {
-      setFetchingPrice(false);
+      if (!forceRefresh) {
+        setFetchingPrice(false);
+      }
     }
   };
 
@@ -283,7 +298,7 @@ export default function SellCryptoScreen() {
         
         // Try to get static sell rate from pricing engine
         try {
-          const { price: retryPrice } = await getCryptoPrice(selectedCrypto.symbol);
+          const { price: retryPrice } = await getCryptoPrice(selectedCrypto.symbol, { forceRefresh: true });
           const sellRateNgn = retryPrice?.bid ?? 0;
           if (sellRateNgn > 0) {
             setExchangeRate(sellRateNgn);
@@ -419,7 +434,7 @@ export default function SellCryptoScreen() {
                     style={styles.syncButton}
                   >
                     {syncingBalance ? (
-                      <ActivityIndicator size="small" color="#6B46C1" />
+                      <AppLoadingIndicator size="small" />
                     ) : (
                       <>
                         <MaterialIcons name="sync" size={16} color="#6B46C1" />
@@ -455,7 +470,7 @@ export default function SellCryptoScreen() {
             </View>
             {fetchingPrice && !exchangeRate && (
               <View style={styles.exchangeRateBadge}>
-                <ActivityIndicator size="small" color="#6B46C1" style={{ marginRight: 8 }} />
+                <AppLoadingIndicator size="small" style={{ marginRight: 8 }} />
                 <ThemedText style={styles.exchangeRateText}>
                   Fetching price...
                 </ThemedText>
@@ -712,7 +727,7 @@ export default function SellCryptoScreen() {
             activeOpacity={0.8}
           >
             {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <AppLoadingIndicator size="small" variant="onPrimary" />
             ) : (
               <ThemedText style={styles.continueButtonText}>Continue</ThemedText>
             )}
@@ -932,7 +947,7 @@ export default function SellCryptoScreen() {
                 disabled={executing}
               >
                 {executing ? (
-                  <ActivityIndicator color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="check-circle" size={20} color="#FFFFFF" />

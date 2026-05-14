@@ -45,7 +45,7 @@ export type SupportedAsset = typeof SUPPORTED_ASSETS[number];
 /**
  * Main cryptocurrencies to create wallets for on user signup
  */
-export const DEFAULT_WALLET_ASSETS: SupportedAsset[] = ['BTC', 'ETH', 'SOL'];
+export const DEFAULT_WALLET_ASSETS: SupportedAsset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
 /**
  * Get network mode from app settings

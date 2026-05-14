@@ -6,13 +6,11 @@ import * as Linking from 'expo-linking';
 import 'react-native-reanimated';
 // Import WebCrypto polyfill before Supabase
 import '@/lib/webcrypto-polyfill';
-// Initialize push notification handler early
-import '@/lib/push-notification-service';
+import { Platform } from 'react-native';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/lib/supabase';
-import { parseSupabaseAuthTokensFromUrl } from '@/lib/supabase-auth-redirect';
+import { establishSessionFromAuthRedirectUrl } from '@/lib/supabase-auth-redirect';
 
 export const unstable_settings = {
   initialRouteName: 'index',
@@ -26,20 +24,23 @@ function DeeplinkHandler() {
   const handleDeeplink = useCallback(async (url: string) => {
     console.log('🔗 Deeplink received:', url);
 
-    if (url.includes('access_token=') && url.includes('refresh_token=')) {
-      const { access_token, refresh_token, type } = parseSupabaseAuthTokensFromUrl(url);
-      if (access_token && refresh_token) {
-        const { error } = await supabase.auth.setSession({ access_token, refresh_token });
-        if (error) {
-          console.error('❌ Supabase session from link:', error.message);
-          router.replace('/auth/signin');
-          return;
-        }
-        if (type === 'recovery') {
+    const authFromEmail =
+      url.includes('access_token=') ||
+      url.includes('refresh_token=') ||
+      url.includes('code=');
+    if (authFromEmail) {
+      const result = await establishSessionFromAuthRedirectUrl(url);
+      if (result.success) {
+        if (result.flow === 'recovery') {
           router.replace('/auth/reset-password');
         } else {
-          router.replace('/(tabs)');
+          router.replace('/(tabs)/index');
         }
+        return;
+      }
+      if (url.includes('access_token=') || url.includes('code=')) {
+        console.error('❌ Supabase session from email link:', result.error);
+        router.replace('/auth/signin');
         return;
       }
     }
@@ -50,14 +51,14 @@ function DeeplinkHandler() {
 
       // Handle payment callback deeplink
       if (hostname === 'home' || path === '/home') {
-        const paymentStatus = queryParams?.payment || queryParams?.status;
-        
+        const paymentStatus = String(queryParams?.payment || queryParams?.status || '').toLowerCase();
+
         if (paymentStatus === 'successful' || paymentStatus === 'success') {
           console.log('✅ Payment successful, navigating to home...');
           
           // Navigate to home page (tabs)
           if (user) {
-            router.replace('/(tabs)');
+            router.replace('/(tabs)/index');
           } else {
             router.replace('/');
           }
@@ -65,14 +66,14 @@ function DeeplinkHandler() {
           console.log('❌ Payment failed or cancelled');
           // Still navigate to home, but could show error message
           if (user) {
-            router.replace('/(tabs)');
+            router.replace('/(tabs)/index');
           } else {
             router.replace('/');
           }
         } else {
           // Just navigate to home
           if (user) {
-            router.replace('/(tabs)');
+            router.replace('/(tabs)/index');
           } else {
             router.replace('/');
           }
@@ -80,18 +81,18 @@ function DeeplinkHandler() {
       }
       // Handle payment-callback deeplink (backward compatibility)
       else if (hostname === 'payment-callback' || path === '/payment-callback') {
-        const status = queryParams?.status;
+        const status = String(queryParams?.status || '').toLowerCase();
         console.log('💳 Payment callback received:', status);
-        
+
         if (status === 'successful' || status === 'success') {
           if (user) {
-            router.replace('/(tabs)');
+            router.replace('/(tabs)/index');
           } else {
             router.replace('/');
           }
         } else {
           if (user) {
-            router.replace('/(tabs)');
+            router.replace('/(tabs)/index');
           } else {
             router.replace('/');
           }
@@ -103,6 +104,11 @@ function DeeplinkHandler() {
   }, [router, user]);
 
   useEffect(() => {
+    // Avoid crashing environments where notifications native modules are unavailable (web / Expo Go limitations).
+    if (Platform.OS !== 'web') {
+      import('@/lib/push-notification-service').catch(() => {});
+    }
+
     // Handle initial URL (app opened via deeplink)
     Linking.getInitialURL().then((url) => {
       if (url) {

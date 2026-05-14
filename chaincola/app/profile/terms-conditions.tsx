@@ -1,10 +1,12 @@
 import { useState, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { getAppSettingsData } from '@/lib/app-settings-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 export default function TermsConditionsScreen() {
   const [termsAndConditions, setTermsAndConditions] = useState<string>('');
@@ -57,7 +59,7 @@ export default function TermsConditionsScreen() {
       >
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Loading terms and conditions...</ThemedText>
           </View>
         ) : (

@@ -9,7 +9,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,6 +27,8 @@ import { supabase } from '@/lib/supabase';
 import * as Clipboard from 'expo-clipboard';
 import { validateAddress, extractAddressFromQR } from '@/lib/address-validator';
 import { getDemoWallet } from '@/lib/demo-wallets';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 // Import expo-camera with error handling
 let CameraView: any = null;
 let CameraType: any = null;
@@ -270,9 +271,9 @@ export default function SendCryptoScreen() {
     try {
       setBalanceLoading(true);
       
-      // Fetch balance and price (static rate from pricing engine) in parallel
+      // Fetch balance and live spot price (for fiat equivalent display) in parallel
       const balancePromise = getUserCryptoBalances(user.id);
-      const pricePromise = getLunoPrices([crypto.symbol]);
+      const pricePromise = getLunoPrices([crypto.symbol], { retailOverlay: false });
       
       // Helper function to add timeout to a promise
       const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> => {
@@ -290,7 +291,7 @@ export default function SendCryptoScreen() {
           console.warn('Balance fetch error:', err.message);
           return { balances: {}, error: err.message };
         }),
-        withTimeout(pricePromise, 8000, 'Price fetch timeout').catch(err => {
+        withTimeout(pricePromise, 22000, 'Price fetch timeout').catch(err => {
           console.warn('Price fetch error:', err.message);
           return { prices: {}, error: err.message };
         }),
@@ -310,12 +311,12 @@ export default function SendCryptoScreen() {
         setCryptoBalance(0);
       }
       
-      // Set price from pricing engine (static rate)
+      // Set price from market spot (retail overlay off)
       if (priceResult.prices && priceResult.prices[crypto.symbol]) {
         const price = priceResult.prices[crypto.symbol];
         setCryptoPriceUSD(price.price_usd || null);
         setCryptoPriceNGN(price.price_ngn || null);
-        console.log(`✅ Using static rate for ${crypto.symbol}: $${price.price_usd} / ₦${price.price_ngn}`);
+        console.log(`✅ Using spot rate for ${crypto.symbol}: $${price.price_usd} / ₦${price.price_ngn}`);
       } else {
         console.warn(`Could not fetch ${crypto.symbol} price:`, priceResult.error);
         // Try to use fallback price from cryptoData if available
@@ -965,7 +966,7 @@ export default function SendCryptoScreen() {
                 Available Balance
               </ThemedText>
               {balanceLoading ? (
-                <ActivityIndicator size="small" color="#6B46C1" style={{ marginTop: 8 }} />
+                <AppLoadingIndicator size="small" style={{ marginTop: 8 }} />
               ) : (
                 <View style={styles.balanceAmountContainer}>
                   <ThemedText 
@@ -1026,7 +1027,7 @@ export default function SendCryptoScreen() {
                   {feeLoading ? (
                     <View style={styles.feeRow}>
                       <ThemedText style={styles.feeLabel}>Calculating fee...</ThemedText>
-                      <ActivityIndicator size="small" color="#6B46C1" />
+                      <AppLoadingIndicator size="small" />
                     </View>
                   ) : (
                     <>
@@ -1144,7 +1145,7 @@ export default function SendCryptoScreen() {
                 />
                 {checkingContract && (
                   <View style={styles.checkingContractContainer}>
-                    <ActivityIndicator size="small" color="#6B46C1" />
+                    <AppLoadingIndicator size="small" />
                     <ThemedText style={styles.checkingContractText}>Checking address...</ThemedText>
                   </View>
                 )}
@@ -1292,7 +1293,10 @@ export default function SendCryptoScreen() {
         visible={showConfirmModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowConfirmModal(false)}
+        onRequestClose={() => {
+          if (sending) return;
+          setShowConfirmModal(false);
+        }}
       >
         <View style={styles.modalOverlay}>
           <ScrollView 
@@ -1304,10 +1308,14 @@ export default function SendCryptoScreen() {
               <View style={styles.confirmModalHeader}>
                 <TouchableOpacity
                   style={styles.confirmModalBackButton}
-                  onPress={() => setShowConfirmModal(false)}
-                  activeOpacity={0.8}
+                  onPress={() => {
+                    if (sending) return;
+                    setShowConfirmModal(false);
+                  }}
+                  activeOpacity={sending ? 1 : 0.8}
+                  disabled={sending}
                 >
-                  <MaterialIcons name="arrow-back" size={24} color="#11181C" />
+                  <MaterialIcons name="arrow-back" size={24} color={sending ? '#9CA3AF' : '#11181C'} />
                 </TouchableOpacity>
                 <ThemedText 
                   style={styles.confirmModalTitleHeader}
@@ -1380,7 +1388,7 @@ export default function SendCryptoScreen() {
                     </TouchableOpacity>
                   </View>
                   {feeLoadingEstimate ? (
-                    <ActivityIndicator size="small" color="#6B46C1" style={{ marginTop: 4 }} />
+                    <AppLoadingIndicator size="small" style={{ marginTop: 4 }} />
                   ) : (
                     <View style={styles.confirmFeeAmountRow}>
                       <ThemedText style={styles.confirmFeeAmount}>
@@ -1449,7 +1457,7 @@ export default function SendCryptoScreen() {
                     end={{ x: 1, y: 0 }}
                   >
                     {feeLoadingEstimate ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <AppLoadingIndicator size="small" variant="onPrimary" />
                     ) : (
                       <ThemedText 
                         style={styles.confirmButtonText}
@@ -1466,16 +1474,20 @@ export default function SendCryptoScreen() {
             ) : (
               // Default confirmation modal for other cryptos - matching sell modal style
               <>
-                <View style={styles.summaryHeader}>
-                  <View style={styles.summaryIconContainer}>
+                <View style={[styles.summaryHeader, sending && styles.summaryHeaderSending]}>
+                  <View style={[styles.summaryIconContainer, sending && styles.summaryIconContainerSending]}>
                     <Image
                       source={crypto.logo}
-                      style={styles.confirmCryptoLogo}
+                      style={[styles.confirmCryptoLogo, sending && styles.confirmCryptoLogoSending]}
                       contentFit="contain"
                     />
                   </View>
-                  <ThemedText style={styles.summaryModalTitle}>Send Summary</ThemedText>
-                  <ThemedText style={styles.summaryModalSubtitle}>Review your send transaction details</ThemedText>
+                  <ThemedText style={[styles.summaryModalTitle, sending && styles.summaryModalTitleSending]}>
+                    Send Summary
+                  </ThemedText>
+                  <ThemedText style={styles.summaryModalSubtitle}>
+                    {sending ? 'Processing your send…' : 'Review your send transaction details'}
+                  </ThemedText>
                 </View>
                 
                 <View style={styles.summaryDetails}>
@@ -1593,27 +1605,59 @@ export default function SendCryptoScreen() {
                 
                 <View style={styles.summaryButtons}>
                   <TouchableOpacity
-                    style={styles.summaryCancelButton}
-                    onPress={() => setShowConfirmModal(false)}
-                    activeOpacity={0.8}
+                    style={[
+                      styles.summaryCancelButton,
+                      sending && styles.summaryCancelButtonSending,
+                    ]}
+                    onPress={() => {
+                      if (sending) return;
+                      setShowConfirmModal(false);
+                    }}
+                    activeOpacity={sending ? 1 : 0.8}
                     disabled={sending}
                   >
-                    <ThemedText style={styles.summaryCancelButtonText}>Cancel</ThemedText>
+                    <ThemedText
+                      style={[
+                        styles.summaryCancelButtonText,
+                        sending && styles.summaryCancelButtonTextSending,
+                      ]}
+                    >
+                      Cancel
+                    </ThemedText>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.sendNowButton, sending && styles.sendNowButtonDisabled]}
+                    style={[styles.sendNowButton, sending && styles.sendNowButtonSending]}
                     onPress={handleConfirmSend}
-                    activeOpacity={0.8}
+                    activeOpacity={sending ? 1 : 0.8}
                     disabled={sending}
                   >
-                    {sending ? (
-                      <ActivityIndicator color="#FFFFFF" />
-                    ) : (
-                      <>
-                        <MaterialIcons name="send" size={20} color="#FFFFFF" />
-                        <ThemedText style={styles.sendNowButtonText}>Send Now</ThemedText>
-                      </>
-                    )}
+                    <LinearGradient
+                      colors={
+                        sending ? ['#7C3AED', '#6B46C1'] : ['#6B46C1', '#9333EA']
+                      }
+                      style={styles.sendNowButtonGradient}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                    >
+                      {sending ? (
+                        <View style={styles.sendNowLoadingRow}>
+                          <AppLoadingIndicator variant="onPrimary" size="medium" />
+                          <ThemedText
+                            style={styles.sendNowLoadingText}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.8}
+                          >
+                            Processing…
+                          </ThemedText>
+                        </View>
+                      ) : (
+                        <>
+                          <MaterialIcons name="send" size={20} color="#FFFFFF" />
+                          <ThemedText style={styles.sendNowButtonText}>Send Now</ThemedText>
+                        </>
+                      )}
+                    </LinearGradient>
                   </TouchableOpacity>
                 </View>
               </>
@@ -1631,7 +1675,7 @@ export default function SendCryptoScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.loadingModalContent}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingModalText}>
               Sending {crypto.symbol}...
             </ThemedText>
@@ -2326,11 +2370,16 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 24,
     margin: 20,
-    maxWidth: '100%',
+    width: '100%',
+    maxWidth: 400,
+    alignSelf: 'center',
   },
   summaryHeader: {
     alignItems: 'center',
     marginBottom: 24,
+  },
+  summaryHeaderSending: {
+    opacity: 0.92,
   },
   summaryIconContainer: {
     width: 64,
@@ -2341,12 +2390,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 16,
   },
+  summaryIconContainerSending: {
+    transform: [{ scale: 0.96 }],
+  },
   summaryModalTitle: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#11181C',
     marginBottom: 8,
     textAlign: 'center',
+  },
+  summaryModalTitleSending: {
+    color: '#5B21B6',
   },
   summaryModalSubtitle: {
     fontSize: 14,
@@ -2355,6 +2410,8 @@ const styles = StyleSheet.create({
   },
   summaryDetails: {
     marginBottom: 24,
+    width: '100%',
+    alignSelf: 'stretch',
   },
   summaryCard: {
     backgroundColor: '#F9FAFB',
@@ -2362,6 +2419,8 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#E5E7EB',
+    width: '100%',
+    alignSelf: 'stretch',
   },
   summaryRow: {
     flexDirection: 'row',
@@ -2403,31 +2462,65 @@ const styles = StyleSheet.create({
   summaryButtons: {
     flexDirection: 'row',
     gap: 12,
+    width: '100%',
+    alignItems: 'stretch',
   },
   summaryCancelButton: {
     flex: 1,
-    backgroundColor: '#F3F4F6',
+    minHeight: 52,
+    justifyContent: 'center',
+    backgroundColor: '#F9FAFB',
     borderRadius: 12,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  summaryCancelButtonSending: {
+    backgroundColor: '#F5F3FF',
+    borderColor: '#C4B5FD',
+    opacity: 0.85,
   },
   summaryCancelButtonText: {
     fontSize: 16,
     fontWeight: '600',
     color: '#374151',
   },
+  summaryCancelButtonTextSending: {
+    color: '#9CA3AF',
+  },
   sendNowButton: {
     flex: 1,
-    backgroundColor: '#6B46C1',
+    minHeight: 52,
     borderRadius: 12,
-    paddingVertical: 14,
+    overflow: 'hidden',
+  },
+  sendNowButtonSending: {
+    opacity: 0.8,
+  },
+  sendNowButtonGradient: {
+    minHeight: 52,
+    paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 8,
   },
+  sendNowLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 52,
+    width: '100%',
+  },
+  sendNowLoadingText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#EDE9FE',
+  },
   sendNowButtonDisabled: {
-    backgroundColor: '#D1D5DB',
+    opacity: 0.55,
   },
   sendNowButtonText: {
     fontSize: 16,
@@ -2440,6 +2533,10 @@ const styles = StyleSheet.create({
   confirmCryptoLogo: {
     width: 48,
     height: 48,
+  },
+  confirmCryptoLogoSending: {
+    width: 44,
+    height: 44,
   },
   confirmModalTitle: {
     fontSize: 24,
@@ -2802,11 +2899,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 12,
     elevation: 8,
-  },
-  summaryIconContainer: {
-    alignItems: 'center',
-    marginTop: 24,
-    marginBottom: 16,
   },
   summaryIconGradient: {
     width: 64,

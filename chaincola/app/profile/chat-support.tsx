@@ -7,7 +7,6 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  ActivityIndicator,
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -32,6 +31,7 @@ import {
   fetchSupportQuickTopics,
   type SupportQuickTopic,
 } from '@/lib/support-chat-quick-topics';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 interface Message {
   id: string;
@@ -425,7 +425,7 @@ export default function ChatSupportScreen() {
       >
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Loading chat...</ThemedText>
           </View>
         ) : (
@@ -567,7 +567,7 @@ export default function ChatSupportScreen() {
               end={{ x: 1, y: 0 }}
             >
               {sending ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
+                <AppLoadingIndicator size="small" variant="onPrimary" />
               ) : (
                 <MaterialIcons name="send" size={20} color="#FFFFFF" />
               )}
@@ -833,5 +833,4 @@ const styles = StyleSheet.create({
     color: '#6366F1',
   },
 });
-
 

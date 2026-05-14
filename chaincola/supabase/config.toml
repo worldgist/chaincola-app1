@@ -1,0 +1,4 @@
+project_id = "woyvzsysasgvpigaflul"
+
+[functions.swap-crypto]
+verify_jwt = true

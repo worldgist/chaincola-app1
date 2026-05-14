@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, RefreshControl, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, RefreshControl, Alert } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -10,6 +10,8 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserCryptoBalances, formatCryptoBalance, formatUsdValue, formatNgnValue, CryptoBalance, getLunoPrices, CryptoPrice, syncSolBalanceFromBlockchain } from '@/lib/crypto-price-service';
 import CryptoSelectModal from '@/components/crypto-select-modal';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+import { ensureUserWallets, getWalletAddress } from '@/lib/crypto-wallet-service';
 
 interface CryptoAsset {
   id: string;
@@ -51,6 +53,8 @@ export default function WalletScreen() {
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [selectedCrypto, setSelectedCrypto] = useState<{ asset: string; name: string; logo: any } | null>(null);
   const priceRefetchDoneRef = useRef(false);
+  /** Throttle deposit-address backfill so we do not hammer the API on every tab focus */
+  const lastDepositWalletsEnsureRef = useRef(0);
 
   const fetchWallet = async () => {
     if (!user?.id) {
@@ -64,7 +68,9 @@ export default function WalletScreen() {
       
       // Fetch balances and prices in parallel with separate timeouts
       const balancePromise = getUserCryptoBalances(user.id);
-      const pricePromise = getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL']);
+      const pricePromise = getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'], {
+        retailOverlay: false,
+      });
       
       // Separate timeouts: balances can take longer, prices should be faster
       const balanceTimeout = new Promise((_, reject) => 
@@ -223,7 +229,7 @@ export default function WalletScreen() {
 
     const t = setTimeout(() => {
       priceRefetchDoneRef.current = true;
-      getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'])
+      getLunoPrices(['BTC', 'ETH', 'USDT', 'USDC', 'XRP', 'SOL'], { retailOverlay: false })
         .then((pricesResult) => {
           if (!pricesResult.prices || Object.keys(pricesResult.prices).length === 0) return;
           setCryptoAssets((prev) =>
@@ -249,9 +255,31 @@ export default function WalletScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (user?.id) {
-        fetchWallet();
+      if (!user?.id) return;
+
+      fetchWallet();
+
+      const THROTTLE_MS = 45_000;
+      const now = Date.now();
+      if (now - lastDepositWalletsEnsureRef.current < THROTTLE_MS) {
+        return;
       }
+      lastDepositWalletsEnsureRef.current = now;
+
+      let cancelled = false;
+      void (async () => {
+        try {
+          const result = await ensureUserWallets('mainnet');
+          if (cancelled || !result.success || result.created <= 0) return;
+          fetchWallet();
+        } catch {
+          /* non-fatal */
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
     }, [user?.id])
   );
 
@@ -294,7 +322,7 @@ export default function WalletScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading wallet...</ThemedText>
         </View>
       </ThemedView>
@@ -455,7 +483,7 @@ export default function WalletScreen() {
                           </ThemedText>
                           {asset.pricePerUnitNGN && asset.pricePerUnitNGN !== 'N/A' ? (
                             <ThemedText style={styles.assetPrice} numberOfLines={1}>
-                              {asset.pricePerUnitNGN}/unit
+                              {asset.pricePerUnitNGN}
                             </ThemedText>
                           ) : null}
                         </View>
@@ -467,7 +495,7 @@ export default function WalletScreen() {
                             activeOpacity={0.7}
                           >
                             {syncingSol ? (
-                              <ActivityIndicator size="small" color="#6B46C1" />
+                              <AppLoadingIndicator size="small" />
                             ) : (
                               <MaterialIcons name="sync" size={18} color="#6B46C1" />
                             )}
@@ -550,11 +578,13 @@ export default function WalletScreen() {
             const asset = assetMap[cryptoId];
             if (asset) {
               try {
-                const { getWalletAddress } = await import('@/lib/crypto-wallet-service');
                 const { address, error } = await getWalletAddress(asset as any, 'mainnet');
                 if (address && !error) {
                   // Navigate to crypto detail page which shows the receive modal
-                  router.push({ pathname: `/crypto/${asset}`, params: { showReceive: 'true' } });
+                  router.push({
+                    pathname: `/crypto/${asset}`,
+                    params: { showReceive: 'true', from: 'wallet' },
+                  });
                 } else {
                   Alert.alert('Error', error || 'Failed to generate wallet address');
                 }
@@ -593,7 +623,6 @@ export default function WalletScreen() {
           const asset = assetMap[assetId];
           if (asset) {
             try {
-              const { getWalletAddress } = await import('@/lib/crypto-wallet-service');
               const { address, error } = await getWalletAddress(asset as any, 'mainnet');
               if (address && !error) {
                 const ClipboardModule = await import('expo-clipboard');

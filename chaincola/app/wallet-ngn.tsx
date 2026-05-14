@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
-import { StyleSheet, View, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
+import { StyleSheet, View, TouchableOpacity, SafeAreaView } from 'react-native';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
@@ -53,7 +54,7 @@ export default function WalletNgnScreen() {
         <View style={styles.balanceCard}>
           <ThemedText style={styles.balanceLabel}>Available Balance</ThemedText>
           {loading ? (
-            <ActivityIndicator size="small" color="#11181C" style={{ marginTop: 8 }} />
+            <AppLoadingIndicator size="small" style={{ marginTop: 8 }} />
           ) : (
             <View style={styles.balanceAmountContainer}>
               <ThemedText 

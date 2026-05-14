@@ -9,7 +9,6 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -17,6 +16,7 @@ import { ThemedText } from '@/components/themed-text';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { savePIN } from '@/lib/pin-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function CreatePinScreen() {
   const params = useLocalSearchParams();
@@ -210,7 +210,7 @@ export default function CreatePinScreen() {
           style={styles.gradient}
         >
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Verifying email...</ThemedText>
           </View>
         </LinearGradient>

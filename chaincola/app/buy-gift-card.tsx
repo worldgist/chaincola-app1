@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  ActivityIndicator,
   Modal,
   Alert,
   KeyboardAvoidingView,
@@ -21,6 +20,8 @@ import { purchaseGiftCard, GiftCardPurchase } from '@/lib/gift-card-service';
 import { supabase } from '@/lib/supabase';
 import { getAllBrandsForCountry, ZenditBrand, getAvailableCountries, getAvailableGiftCards, getAvailableCardAmounts, CountryInfo, enrichBrandsWithLogos, getZenditVoucherOffers, createZenditVoucherPurchase, VoucherField } from '@/lib/zendit-api-service';
 import { Image } from 'expo-image';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 // Card amounts fallback (in USD)
 const CARD_AMOUNTS_USD = [10, 25, 50, 100, 200, 500];
@@ -468,7 +469,7 @@ export default function BuyGiftCardScreen() {
               <View style={styles.dropdownLeft}>
                 {loadingCountries ? (
                   <>
-                    <ActivityIndicator size="small" color="#6B46C1" />
+                    <AppLoadingIndicator size="small" />
                     <ThemedText style={styles.dropdownPlaceholder}>Loading countries...</ThemedText>
                   </>
                 ) : selectedCountry ? (
@@ -494,7 +495,7 @@ export default function BuyGiftCardScreen() {
             <ThemedText style={styles.sectionTitle}>Select Gift Card</ThemedText>
             {loadingBrands ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="small" color="#6B46C1" />
+                <AppLoadingIndicator size="small" />
                 <ThemedText style={styles.loadingText}>Loading brands...</ThemedText>
               </View>
             ) : (
@@ -568,7 +569,7 @@ export default function BuyGiftCardScreen() {
                 <MaterialIcons name="arrow-drop-down" size={24} color="#6B7280" />
               )}
               {loadingCardAmounts && (
-                <ActivityIndicator size="small" color="#6B46C1" />
+                <AppLoadingIndicator size="small" />
               )}
             </TouchableOpacity>
           </View>
@@ -649,7 +650,7 @@ export default function BuyGiftCardScreen() {
             <ScrollView style={styles.pickerList}>
               {loadingCountries ? (
                 <View style={styles.loadingContainer}>
-                  <ActivityIndicator size="small" color="#6B46C1" />
+                  <AppLoadingIndicator size="small" />
                   <ThemedText style={styles.loadingText}>Loading countries...</ThemedText>
                 </View>
               ) : availableCountries.length === 0 ? (
@@ -771,7 +772,7 @@ export default function BuyGiftCardScreen() {
             <ScrollView style={styles.pickerList}>
               {loadingCardAmounts ? (
                 <View style={styles.loadingContainer}>
-                  <ActivityIndicator size="small" color="#6B46C1" />
+                  <AppLoadingIndicator size="small" />
                   <ThemedText style={styles.loadingText}>Loading amounts...</ThemedText>
                 </View>
               ) : (
@@ -867,7 +868,7 @@ export default function BuyGiftCardScreen() {
                 disabled={processing}
               >
                 {processing ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <LinearGradient
                     colors={['#6B46C1', '#7C3AED']}

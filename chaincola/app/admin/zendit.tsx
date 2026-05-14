@@ -4,7 +4,6 @@ import {
   View,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
   RefreshControl,
   Alert,
 } from 'react-native';
@@ -17,6 +16,7 @@ import { isAdmin } from '@/lib/admin-service';
 import { supabase } from '@/lib/supabase';
 import Constants from 'expo-constants';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl || 
                      process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -243,7 +243,7 @@ export default function ZenditManagementScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading Zendit Management...</ThemedText>
         </View>
       </ThemedView>
@@ -303,7 +303,7 @@ export default function ZenditManagementScreen() {
             </View>
           ) : (
             <View style={styles.balanceContent}>
-              <ActivityIndicator size="small" color="#6B46C1" />
+              <AppLoadingIndicator size="small" />
               <ThemedText style={styles.balanceSubtext}>Loading balance...</ThemedText>
             </View>
           )}
@@ -353,7 +353,7 @@ export default function ZenditManagementScreen() {
 
           {purchasesLoading ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#6B46C1" />
+              <AppLoadingIndicator size="large" />
             </View>
           ) : purchases.length === 0 ? (
             <View style={styles.emptyContainer}>

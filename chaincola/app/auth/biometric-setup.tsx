@@ -7,7 +7,6 @@ import {
   Platform,
   ScrollView,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -16,6 +15,8 @@ import { router } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from '@/contexts/AuthContext';
 import { saveBiometricPreference } from '@/lib/auth-utils';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 export default function BiometricSetupScreen() {
   const [biometricEnabled, setBiometricEnabled] = useState(false);
@@ -180,7 +181,7 @@ export default function BiometricSetupScreen() {
 
               {checking ? (
                 <View style={styles.checkingContainer}>
-                  <ActivityIndicator size="large" color="#6B46C1" />
+                  <AppLoadingIndicator size="large" />
                   <ThemedText style={styles.checkingText}>
                     Checking biometric availability...
                   </ThemedText>
@@ -202,7 +203,7 @@ export default function BiometricSetupScreen() {
                         end={{ x: 1, y: 0 }}
                       >
                         {loading ? (
-                          <ActivityIndicator color="#FFFFFF" size="small" />
+                          <AppLoadingIndicator size="small" variant="onPrimary" />
                         ) : (
                           <>
                             <MaterialIcons 

@@ -9,13 +9,14 @@ import {
   ScrollView,
   Modal,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
 import { Link, router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+import { AUTH_EMAIL_OTP_LENGTH } from '@/lib/auth-email-otp-length';
 
 export default function ForgotPasswordScreen() {
   const [email, setEmail] = useState('');
@@ -103,7 +104,7 @@ export default function ForgotPasswordScreen() {
                 adjustsFontSizeToFit
                 minimumFontScale={0.8}
               >
-                Enter your email address and we'll send you a verification code to reset your password
+                {`Enter your email address and we will send a ${AUTH_EMAIL_OTP_LENGTH}-digit verification code to reset your password`}
               </ThemedText>
             </View>
 
@@ -146,7 +147,7 @@ export default function ForgotPasswordScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <>
                       <MaterialIcons name="send" size={20} color="#FFFFFF" />
@@ -156,7 +157,7 @@ export default function ForgotPasswordScreen() {
                         adjustsFontSizeToFit
                         minimumFontScale={0.8}
                       >
-                        Send Verification Code
+                        {`Send ${AUTH_EMAIL_OTP_LENGTH}-digit code`}
                       </ThemedText>
                     </>
                   )}
@@ -204,7 +205,7 @@ export default function ForgotPasswordScreen() {
             </View>
             <ThemedText style={styles.modalTitle}>Success!</ThemedText>
             <ThemedText style={styles.modalMessage}>
-              We've successfully sent the code to your email
+              {`We have sent a ${AUTH_EMAIL_OTP_LENGTH}-digit code to your email`}
             </ThemedText>
             <TouchableOpacity
               style={styles.modalButton}

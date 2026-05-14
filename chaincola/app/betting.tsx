@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, TextInput, TouchableOpacity, ScrollView } from 'react-native';
 import { ThemedView } from '@/components/themed-view';
 import { ThemedText } from '@/components/themed-text';
 import { router } from 'expo-router';
 import { placeBet } from '@/lib/betting-service';
 import { useAuth } from '@/contexts/AuthContext';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 const providers = [
   { id: 'BET9JA', name: 'Bet9ja' },
@@ -95,7 +97,7 @@ export default function Betting() {
         <TextInput style={styles.input} placeholder="0.00" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" />
 
         <TouchableOpacity style={styles.betButton} onPress={handlePlaceBet} disabled={processing}>
-          {processing ? <ActivityIndicator color="#fff" /> : <ThemedText style={styles.betText}>Place Bet</ThemedText>}
+          {processing ? <AppLoadingIndicator size="small" variant="onPrimary" /> : <ThemedText style={styles.betText}>Place Bet</ThemedText>}
         </TouchableOpacity>
 
         {success && (

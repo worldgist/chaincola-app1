@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
@@ -13,6 +13,7 @@ import {
   getNotificationIcon,
   type Notification,
 } from '@/lib/notification-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function NotificationsScreen() {
   const { user } = useAuth();
@@ -111,7 +112,7 @@ export default function NotificationsScreen() {
       >
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Loading notifications...</ThemedText>
           </View>
         ) : (

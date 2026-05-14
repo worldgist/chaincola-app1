@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, View, TouchableOpacity, Image, ScrollView, Dimensions, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, TouchableOpacity, Image, ScrollView, Dimensions, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -11,12 +11,12 @@ import { getUserTransactions, TransactionListItem } from '@/lib/transaction-serv
 import WalletAddressModal from '@/components/wallet-address-modal';
 import CryptoPriceChart from '@/components/crypto-price-chart';
 import {
-  getCryptoChartHistory,
-  getCryptoMarketInfo,
   formatCompactNumber,
   type ChartRange,
   type MarketInfo,
-} from '@/lib/coingecko-service';
+} from '@/lib/crypto-market-format';
+import { fetchAlchemyCryptoDetails, supportsAlchemyCryptoDetails } from '@/lib/alchemy-crypto-details-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 // Price card has 20px outer padding from scroll content + 20px internal padding
@@ -61,7 +61,7 @@ const RANGE_SUFFIX: Record<ChartRange, string> = {
   '1Y': '1Y',
 };
 
-// Used when CoinGecko's description.en is unavailable (network failure / rate limit).
+// In-app copy when no long-form description is loaded from the server.
 const FALLBACK_DESCRIPTIONS: Record<string, string> = {
   BTC: 'Bitcoin uses peer-to-peer technology to operate with no central authority or banks; managing transactions and the issuing of bitcoins is carried out collectively by the network. Bitcoin is open-source; its design is public, nobody owns or controls Bitcoin and everyone can take part. Through many of its unique properties, Bitcoin allows exciting uses that could not be covered by any previous payment system.',
   ETH: 'Ethereum is a global, open-source platform for decentralized applications. On Ethereum, you can write code that controls digital value, runs exactly as programmed, and is accessible anywhere in the world.',
@@ -81,7 +81,14 @@ function AboutStatRow({ label, value, showDivider }: AboutStatRowProps) {
   return (
     <View style={[styles.aboutStatRow, showDivider && styles.aboutStatRowDivider]}>
       <ThemedText style={styles.aboutStatLabel}>{label}</ThemedText>
-      <ThemedText style={styles.aboutStatValue}>{value}</ThemedText>
+      <ThemedText
+        style={styles.aboutStatValue}
+        numberOfLines={3}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}
+      >
+        {value}
+      </ThemedText>
     </View>
   );
 }
@@ -137,30 +144,6 @@ export default function CryptoDetailsScreen() {
 
   const fullName = SYMBOL_TO_NAME[symbol] || symbol;
   const logo = SYMBOL_TO_LOGO[symbol] || require('@/assets/images/bitcoin.png');
-
-  // Live market price (Supabase edge: Alchemy / Luno + fallbacks)
-  useEffect(() => {
-    let mounted = true;
-    async function fetchPrice() {
-      if (!symbol) return;
-      const { price, error } = await getCryptoPrice(symbol);
-      if (!mounted) return;
-      if (price) {
-        setPriceUSD(price.price_usd || null);
-        setPriceNGN(price.price_ngn || null);
-        setChange24h(
-          typeof price.change_24h_pct === 'number' ? price.change_24h_pct : null
-        );
-      } else {
-        setPriceUSD(null);
-        setPriceNGN(null);
-        setChange24h(null);
-      }
-    }
-    fetchPrice();
-    const iv = setInterval(fetchPrice, 60000);
-    return () => { mounted = false; clearInterval(iv); };
-  }, [symbol]);
 
   // Handle showReceive param
   useEffect(() => {
@@ -273,46 +256,85 @@ export default function CryptoDetailsScreen() {
     return () => { mounted = false; };
   }, [user?.id, symbol, activeTab, fullName]);
 
-  // Real chart history from CoinGecko (priced in NGN to match the rest of the UI).
-  // Falls back to a flat line so the card never collapses when the API is down.
+  // Price, chart, cap & volume: Alchemy (Supabase Edge) when available; else spot from getCryptoPrice + flat chart.
   useEffect(() => {
     let mounted = true;
-    async function loadChartData() {
+    async function loadMarketData() {
       if (!symbol) return;
       setChartLoading(true);
       try {
-        const history = await getCryptoChartHistory(symbol, selectedRange, 'ngn');
+        if (supportsAlchemyCryptoDetails(symbol)) {
+          const alchemy = await fetchAlchemyCryptoDetails(symbol, selectedRange);
+          if (!mounted) return;
+          if (alchemy?.success && alchemy.spot) {
+            setPriceUSD(alchemy.spot.price_usd);
+            setPriceNGN(alchemy.spot.price_ngn);
+            setChange24h(
+              typeof alchemy.change_24h_pct === 'number' ? alchemy.change_24h_pct : null
+            );
+            const pts = alchemy.chart?.points ?? [];
+            if (pts.length >= 2) {
+              setChartData(pts);
+            } else {
+              const base = alchemy.spot.price_ngn || generateFallbackChartData(symbol, 1)[0] || 1000;
+              setChartData(Array(24).fill(base));
+            }
+            setMarketInfo({
+              marketCap: alchemy.market?.market_cap_ngn ?? null,
+              totalVolume: alchemy.market?.total_volume_ngn ?? null,
+              circulatingSupply: alchemy.market?.circulating_supply ?? null,
+              description: null,
+              vsCurrency: 'ngn',
+            });
+            return;
+          }
+        }
+
+        const { price } = await getCryptoPrice(symbol, { retailOverlay: false });
         if (!mounted) return;
-        if (history.points.length >= 2) {
-          setChartData(history.points);
+        if (price) {
+          setPriceUSD(price.price_usd ?? null);
+          setPriceNGN(price.price_ngn ?? null);
+          setChange24h(
+            typeof price.change_24h_pct === 'number' ? price.change_24h_pct : null
+          );
         } else {
-          // No real data: show a flat line at the current price (or a stub) so layout is preserved.
-          const fallbackBase = priceNGN || generateFallbackChartData(symbol, 1)[0] || 1000;
-          setChartData(Array(24).fill(fallbackBase));
+          setPriceUSD(null);
+          setPriceNGN(null);
+          setChange24h(null);
+        }
+
+        const fallbackBase =
+          (price?.price_ngn != null ? price.price_ngn : null) ||
+          generateFallbackChartData(symbol, 1)[0] ||
+          1000;
+        setChartData(Array(24).fill(fallbackBase));
+
+        if (mounted) {
+          setMarketInfo({
+            marketCap: null,
+            totalVolume: null,
+            circulatingSupply: null,
+            description: null,
+            vsCurrency: 'ngn',
+          });
         }
       } catch {
-        if (mounted) setChartData(Array(24).fill(priceNGN || 1000));
+        if (mounted) {
+          setChartData(Array(24).fill(1000));
+        }
       } finally {
         if (mounted) setChartLoading(false);
       }
     }
-    loadChartData();
-    return () => { mounted = false; };
-    // priceNGN intentionally not in deps — it only seeds the fallback line on first run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, selectedRange]);
 
-  // Market metadata (cap / volume / supply / description) for the About tab.
-  // Fetched once per symbol; doesn't depend on the selected time range.
-  useEffect(() => {
-    let mounted = true;
-    if (!symbol) return;
-    (async () => {
-      const info = await getCryptoMarketInfo(symbol, 'ngn');
-      if (mounted) setMarketInfo(info);
-    })();
-    return () => { mounted = false; };
-  }, [symbol]);
+    loadMarketData();
+    const iv = setInterval(loadMarketData, 60000);
+    return () => {
+      mounted = false;
+      clearInterval(iv);
+    };
+  }, [symbol, selectedRange]);
 
   const handleSend = () => {
     if (!symbol || !id) {
@@ -379,12 +401,27 @@ export default function CryptoDetailsScreen() {
   const isPositive = periodChange.pct >= 0;
   const changeColor = isPositive ? '#10B981' : '#EF4444';
 
+  const handleBack = () => {
+    // `router.back()` falls back to the root when there is no history.
+    // Prefer returning to the actual previous screen, and only fall back to a sane tab.
+    const from = (params.from || '').toString();
+    if (router.canGoBack()) {
+      router.back();
+      return;
+    }
+    if (from === 'wallet') {
+      router.replace('/(tabs)/wallet');
+      return;
+    }
+    router.replace('/(tabs)');
+  };
+
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView edges={['top']} style={styles.safeArea}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
             <MaterialIcons name="arrow-back" size={24} color="#000000" />
           </TouchableOpacity>
           <View style={styles.headerTitleContainer}>
@@ -440,18 +477,23 @@ export default function CryptoDetailsScreen() {
               <ThemedText style={styles.balanceLabelV2}>{symbol} balance</ThemedText>
             </View>
             {balanceLoading ? (
-              <ActivityIndicator size="large" color="#6B46C1" style={{ marginVertical: 16 }} />
+              <AppLoadingIndicator size="large" style={{ marginVertical: 16 }} />
             ) : (
               <>
                 <ThemedText
                   style={styles.balanceAmountV2}
-                  numberOfLines={1}
+                  numberOfLines={2}
                   adjustsFontSizeToFit
-                  minimumFontScale={0.5}
+                  minimumFontScale={0.55}
                 >
                   {formatCryptoBalance(balanceValue || 0, symbol)} {symbol}
                 </ThemedText>
-                <ThemedText style={styles.balanceNgnV2}>
+                <ThemedText
+                  style={styles.balanceNgnV2}
+                  numberOfLines={2}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.7}
+                >
                   {formatNgnValue(balanceNGNValue || 0)}
                 </ThemedText>
               </>
@@ -467,7 +509,7 @@ export default function CryptoDetailsScreen() {
                 onPress={() =>
                   Alert.alert(
                     `${fullName} (${symbol}) price`,
-                    `Live ${symbol} market price in NGN. Updated every minute. Chart history is provided by CoinGecko.`,
+                    `Live ${symbol} market price in NGN (Alchemy via Chaincola). Chart uses historical prices from the same source when available.`,
                   )
                 }
                 hitSlop={8}
@@ -476,25 +518,35 @@ export default function CryptoDetailsScreen() {
               </TouchableOpacity>
             </View>
 
-            <ThemedText
-              style={styles.priceCardAmountV2}
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.5}
-            >
-              {priceNGN != null ? formatNgnValue(priceNGN) : '—'}
-            </ThemedText>
+            <View style={styles.priceCardAmountWrap}>
+              <ThemedText
+                style={styles.priceCardAmountV2}
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.55}
+                allowFontScaling
+              >
+                {priceNGN != null ? formatNgnValue(priceNGN) : '—'}
+              </ThemedText>
+            </View>
 
             <View style={styles.priceChangeRowV2}>
-              <ThemedText style={[styles.priceChangeAmountV2, { color: changeColor }]}>
+              <ThemedText
+                style={[styles.priceChangeAmountV2, { color: changeColor }]}
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.65}
+              >
                 {isPositive ? '+' : '-'}
                 {formatNgnValue(Math.abs(periodChange.absolute))}
               </ThemedText>
-              <ThemedText style={[styles.priceChangePctV2, { color: changeColor }]}>
+              <ThemedText style={[styles.priceChangePctV2, { color: changeColor }]} numberOfLines={1}>
                 ({isPositive ? '+' : ''}
                 {periodChange.pct.toFixed(2)}%)
               </ThemedText>
-              <ThemedText style={styles.priceChangeSuffixV2}>{RANGE_SUFFIX[selectedRange]}</ThemedText>
+              <ThemedText style={styles.priceChangeSuffixV2} numberOfLines={1}>
+                {RANGE_SUFFIX[selectedRange]}
+              </ThemedText>
             </View>
 
             <View style={styles.chartContainerV2}>
@@ -566,7 +618,7 @@ export default function CryptoDetailsScreen() {
                   </View>
                 )}
                 {transactionsLoading ? (
-                  <ActivityIndicator size="small" color="#6B46C1" style={styles.loader} />
+                  <AppLoadingIndicator size="small" style={styles.loader} />
                 ) : transactions.length === 0 ? (
                   <ThemedText style={styles.emptyText}>
                     You don't have any {symbol} activity yet.
@@ -713,7 +765,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#000000',
   },
@@ -747,31 +799,40 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   balanceLabelIcon: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     marginRight: 6,
   },
   balanceLabelV2: {
-    fontSize: 15,
+    fontSize: 13,
     color: '#374151',
     fontWeight: '500',
   },
   balanceAmountV2: {
-    fontSize: 40,
+    width: '100%',
+    maxWidth: SCREEN_WIDTH - 48,
+    alignSelf: 'center',
+    fontSize: 28,
     fontWeight: '800',
     color: '#000000',
     textAlign: 'center',
-    letterSpacing: 0.3,
-    lineHeight: 48,
+    letterSpacing: 0.2,
+    lineHeight: 34,
     paddingHorizontal: 8,
+    includeFontPadding: false,
   },
   balanceNgnV2: {
-    fontSize: 16,
+    width: '100%',
+    maxWidth: SCREEN_WIDTH - 48,
+    alignSelf: 'center',
+    fontSize: 14,
     fontWeight: '500',
     color: '#9CA3AF',
     marginTop: 4,
     textAlign: 'center',
+    lineHeight: 20,
+    includeFontPadding: false,
   },
 
   // ---- Price card with chart and time-range selector ----
@@ -792,7 +853,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   priceCardLabelV2: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#6B7280',
     fontWeight: '500',
   },
@@ -800,31 +861,45 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     padding: 2,
   },
+  /** Bounds width so adjustsFontSizeToFit works; long ₦ amounts stay on-screen */
+  priceCardAmountWrap: {
+    width: '100%',
+    alignSelf: 'stretch',
+    marginBottom: 6,
+  },
   priceCardAmountV2: {
-    fontSize: 30,
+    width: '100%',
+    fontSize: 22,
     fontWeight: '800',
     color: '#000000',
-    letterSpacing: 0.3,
-    marginBottom: 6,
+    letterSpacing: 0.15,
+    textAlign: 'center',
+    lineHeight: 28,
+    includeFontPadding: false,
   },
   priceChangeRowV2: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
     marginBottom: 8,
+    width: '100%',
+    gap: 4,
   },
   priceChangeAmountV2: {
-    fontSize: 13,
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 12,
     fontWeight: '600',
-    marginRight: 6,
+    marginRight: 4,
   },
   priceChangePctV2: {
-    fontSize: 13,
+    flexShrink: 0,
+    fontSize: 12,
     fontWeight: '600',
-    marginRight: 6,
+    marginRight: 4,
   },
   priceChangeSuffixV2: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#9CA3AF',
     fontWeight: '500',
   },
@@ -856,7 +931,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   rangeButtonTextV2: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#6B7280',
     fontWeight: '500',
   },
@@ -876,11 +951,11 @@ const styles = StyleSheet.create({
   },
   aboutTitleV2: {
     flex: 1,
-    fontSize: 32,
+    fontSize: 24,
     fontWeight: '800',
     color: '#000000',
-    letterSpacing: 0.3,
-    lineHeight: 38,
+    letterSpacing: 0.2,
+    lineHeight: 30,
     paddingRight: 12,
   },
   aboutLogoV2: {
@@ -900,9 +975,9 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   aboutDescriptionText: {
-    fontSize: 15,
+    fontSize: 14,
     color: '#1F2937',
-    lineHeight: 24,
+    lineHeight: 22,
   },
   aboutStatsCard: {
     backgroundColor: '#FFFFFF',
@@ -920,20 +995,28 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 16,
+    gap: 12,
   },
   aboutStatRowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#E5E7EB',
   },
   aboutStatLabel: {
-    fontSize: 15,
+    flexShrink: 0,
+    maxWidth: '42%',
+    fontSize: 14,
     color: '#6B7280',
     fontWeight: '500',
   },
   aboutStatValue: {
-    fontSize: 15,
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 14,
     color: '#000000',
     fontWeight: '700',
+    textAlign: 'right',
+    lineHeight: 19,
   },
 
   cryptoOverviewCard: {
@@ -972,19 +1055,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cryptoOverviewName: {
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: '800',
     color: '#000000',
     marginBottom: 8,
   },
   cryptoOverviewUSD: {
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '600',
     color: '#000000',
     marginBottom: 4,
   },
   cryptoOverviewNGN: {
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '600',
     color: '#10B981',
   },
@@ -1004,22 +1087,22 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   availableBalanceLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#6B46C1',
     marginBottom: 16,
     textAlign: 'center',
   },
   availableBalanceAmount: {
-    fontSize: 36,
+    fontSize: 28,
     fontWeight: '800',
     color: '#6B46C1',
     textAlign: 'center',
     includeFontPadding: false,
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     width: '100%',
     paddingHorizontal: 4,
-    lineHeight: 44,
+    lineHeight: 34,
   },
   assetHeader: {
     alignItems: 'center',
@@ -1076,24 +1159,24 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   cardBalanceAmount: {
-    fontSize: 32,
+    fontSize: 26,
     fontWeight: '900',
     color: '#FFFFFF',
     textAlign: 'center',
-    letterSpacing: 0.3,
+    letterSpacing: 0.25,
     marginBottom: 6,
-    lineHeight: 40,
+    lineHeight: 32,
     width: '100%',
     paddingHorizontal: 2,
     flexShrink: 1,
   },
   cardBalanceNGN: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
     color: '#6B46C1',
     textAlign: 'center',
     marginTop: 4,
-    letterSpacing: 0.3,
+    letterSpacing: 0.25,
     width: '100%',
     paddingHorizontal: 2,
   },
@@ -1106,7 +1189,7 @@ const styles = StyleSheet.create({
     marginVertical: 2,
   },
   cardPriceUSD: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '800',
     color: '#FFFFFF',
     textAlign: 'center',
@@ -1114,7 +1197,7 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingHorizontal: 2,
     flexShrink: 1,
-    lineHeight: 26,
+    lineHeight: 22,
   },
   cardPriceNGN: {
     fontSize: 13,
@@ -1155,13 +1238,13 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   priceValue: {
-    fontSize: 36,
+    fontSize: 28,
     fontWeight: '800',
     color: '#FFFFFF',
     marginBottom: 4,
   },
   priceValueNGN: {
-    fontSize: 24,
+    fontSize: 18,
     fontWeight: '600',
     color: '#9CA3AF',
     marginBottom: 8,
@@ -1298,11 +1381,11 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   balanceAmount: {
-    fontSize: 32,
+    fontSize: 26,
     fontWeight: '900',
     color: '#FFFFFF',
     marginBottom: 6,
-    lineHeight: 38,
+    lineHeight: 32,
   },
   balanceSymbol: {
     fontSize: 16,
@@ -1334,7 +1417,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#6B46C1',
   },
   tabText: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#6B7280',
     fontWeight: '500',
   },

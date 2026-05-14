@@ -1,22 +1,44 @@
 // Push Notification Service
 // Handles push notification registration and token management
+//
+// This must be safe to import in environments without the native notifications module
+// (web, and some Expo Go/device combinations). We therefore lazy-load expo-notifications
+// and only touch it when available.
 
-import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
+import { isRunningInExpoGo } from 'expo';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
 import { getUserNotificationPreferences } from './notification-preferences-service';
 
-// Configure notification handler (use modern fields: shouldShowBanner & shouldShowList)
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
+let handlerConfigured = false;
+
+async function getNotifications() {
+  if (Platform.OS === 'web') return null;
+  // Never import `expo-notifications` in Expo Go: it loads native push code that is not
+  // available there and can crash (PushNotificationIOS / NativeEventEmitter).
+  // `isRunningInExpoGo()` uses the native ExpoGo module — more reliable than Constants alone.
+  if (isRunningInExpoGo()) return null;
+  try {
+    const mod = await import('expo-notifications');
+    const Notifications = mod as typeof import('expo-notifications');
+    if (!handlerConfigured) {
+      handlerConfigured = true;
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowBanner: true,
+          shouldShowList: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+        }),
+      });
+    }
+    return Notifications;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Register for push notifications and save token to database
@@ -25,6 +47,12 @@ export async function registerForPushNotificationsAsync(
   userId: string
 ): Promise<string | null> {
   try {
+    const Notifications = await getNotifications();
+    if (!Notifications) {
+      console.warn('⚠️ Notifications module not available in this environment');
+      return null;
+    }
+
     // Check if device is physical (not simulator)
     if (!Device.isDevice) {
       console.warn('⚠️ Push notifications are not supported on simulators');
@@ -110,31 +138,62 @@ export async function registerForPushNotificationsAsync(
 
     // Save token to database
     console.log('💾 Saving push token to database...');
-    const { error, data } = await supabase
-      .from('push_notification_tokens')
-      .upsert(
-        {
-          user_id: userId,
-          token: pushToken,
-          platform: Platform.OS,
-          device_id: Device.modelName || 'unknown',
-          updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: 'user_id,platform',
-        }
-      )
-      .select();
+    let data: any[] | null = null;
+    try {
+      const result = await supabase
+        .from('push_notification_tokens')
+        .upsert(
+          {
+            user_id: userId,
+            token: pushToken,
+            platform: Platform.OS,
+            device_id: Device.modelName || 'unknown',
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: 'user_id,platform',
+          }
+        )
+        .select();
 
-    if (error) {
-      console.error('❌ Error saving push token:', error);
-      // Don't fail if table doesn't exist yet - it will be created by migration
-      if (error.code === '42P01') {
-        console.warn('⚠️ push_notification_tokens table does not exist. Run migration: supabase db push');
-        return null;
+      if (result.error) {
+        const err: any = result.error;
+        const code = err?.code as string | undefined;
+        const message = err?.message || String(err);
+
+        // Common causes in local/dev setups:
+        // - missing table (42P01)
+        // - missing unique constraint for onConflict (42P10)
+        // - RLS blocks client inserts/updates (42501 / "row-level security")
+        if (code === '42P01') {
+          console.warn(
+            '⚠️ push_notification_tokens table does not exist; skipping DB save (token still valid).'
+          );
+          return pushToken;
+        }
+        if (code === '42P10' || message.toLowerCase().includes('no unique or exclusion constraint')) {
+          console.warn(
+            '⚠️ push_notification_tokens missing unique constraint for (user_id, platform); skipping DB save (token still valid).'
+          );
+          return pushToken;
+        }
+        if (
+          code === '42501' ||
+          message.toLowerCase().includes('row-level security') ||
+          message.toLowerCase().includes('rls')
+        ) {
+          console.warn('⚠️ RLS blocked saving push token; skipping DB save (token still valid).');
+          return pushToken;
+        }
+
+        console.error('❌ Error saving push token:', { code, message });
+        return pushToken;
       }
-      // For other errors, still return the token (it might work even if DB save fails)
-      console.warn('⚠️ Could not save token to database, but token is valid:', pushToken);
+
+      data = (result.data as any[]) ?? null;
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      console.warn('⚠️ Exception saving push token (skipping DB save, token still valid):', message);
       return pushToken;
     }
 
@@ -175,29 +234,33 @@ export async function unregisterPushNotifications(userId: string): Promise<void>
  * Setup notification listeners
  */
 export function setupNotificationListeners(
-  onNotificationReceived?: (notification: Notifications.Notification) => void,
-  onNotificationTapped?: (response: Notifications.NotificationResponse) => void
+  onNotificationReceived?: (notification: any) => void,
+  onNotificationTapped?: (response: any) => void
 ) {
-  // Listener for notifications received while app is foregrounded
-  const receivedListener = Notifications.addNotificationReceivedListener(
-    (notification) => {
+  let receivedListener: any = null;
+  let responseListener: any = null;
+
+  void (async () => {
+    const Notifications = await getNotifications();
+    if (!Notifications) return;
+
+    // Listener for notifications received while app is foregrounded
+    receivedListener = Notifications.addNotificationReceivedListener((notification) => {
       console.log('📬 Notification received:', notification);
       onNotificationReceived?.(notification);
-    }
-  );
+    });
 
-  // Listener for when user taps on a notification
-  const responseListener = Notifications.addNotificationResponseReceivedListener(
-    (response) => {
+    // Listener for when user taps on a notification
+    responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
       console.log('👆 Notification tapped:', response);
       onNotificationTapped?.(response);
-    }
-  );
+    });
+  })();
 
   // Return cleanup function
   return () => {
-    receivedListener.remove();
-    responseListener.remove();
+    receivedListener?.remove?.();
+    responseListener?.remove?.();
   };
 }
 
@@ -206,6 +269,8 @@ export function setupNotificationListeners(
  */
 export async function getBadgeCount(): Promise<number> {
   try {
+    const Notifications = await getNotifications();
+    if (!Notifications) return 0;
     return await Notifications.getBadgeCountAsync();
   } catch (error) {
     console.error('Error getting badge count:', error);
@@ -218,6 +283,8 @@ export async function getBadgeCount(): Promise<number> {
  */
 export async function setBadgeCount(count: number): Promise<void> {
   try {
+    const Notifications = await getNotifications();
+    if (!Notifications) return;
     await Notifications.setBadgeCountAsync(count);
   } catch (error) {
     console.error('Error setting badge count:', error);

@@ -8,7 +8,6 @@ import {
   Platform,
   ScrollView,
   Alert,
-  ActivityIndicator,
   Modal,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -19,13 +18,14 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getUserVerificationStatus } from '@/lib/verification-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BIOMETRIC_LOGIN_ENABLED_KEY, saveBiometricPreference } from '@/lib/auth-utils';
-import { 
+import {
   checkBiometricAvailability as checkBiometricService,
   hasBiometricCredentials,
   signInWithBiometric,
   saveBiometricCredentials,
   deleteBiometricCredentials,
 } from '@/lib/biometric-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function SignInScreen() {
   const [email, setEmail] = useState('');
@@ -612,7 +612,7 @@ export default function SignInScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <>
                       <MaterialIcons name="login" size={20} color="#FFFFFF" />
@@ -645,7 +645,7 @@ export default function SignInScreen() {
                   >
                     <View style={styles.biometricButtonContent}>
                       {biometricLoading ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
+                        <AppLoadingIndicator size="small" variant="onPrimary" />
                       ) : (
                       <MaterialIcons
                         name={biometricType === 'Face ID' ? 'face' : 'fingerprint'}
@@ -732,7 +732,7 @@ export default function SignInScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {biometricLoading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <ThemedText style={styles.modalButtonText}>Enable</ThemedText>
                   )}

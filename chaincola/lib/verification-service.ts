@@ -198,12 +198,9 @@ async function uploadImageToStorage(
       return { success: false, error: errorMessage || String(error) || 'Failed to upload image' };
     }
 
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('verification-documents')
-      .getPublicUrl(filePath);
-
-    return { success: true, url: urlData.publicUrl };
+    // IMPORTANT: `verification-documents` is a private bucket. Public URLs will 404.
+    // Store the storage path in DB; admin UI will resolve to a signed URL when reviewing.
+    return { success: true, url: filePath };
   } catch (error: any) {
     // Enhanced error logging for debugging
     console.error('Error uploading image to storage (catch block):', {
@@ -435,10 +432,12 @@ export async function verifyBVNOrNIN(
     const result = await response.json();
 
     if (!response.ok || result.status === 'error') {
+      const hint = typeof result.hint === 'string' ? result.hint : '';
+      const msg = result.message || 'Failed to verify';
       return {
         success: false,
         verified: false,
-        error: result.message || 'Failed to verify',
+        error: hint ? `${msg} ${hint}` : msg,
       };
     }
 

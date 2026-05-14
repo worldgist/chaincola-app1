@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -9,7 +9,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -18,14 +17,30 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { getNgnBalance, formatBalance } from '@/lib/wallet-service';
-import { verifyBankAccount, submitWithdrawal, getBanks, Bank } from '@/lib/withdrawal-service';
+import {
+  verifyBankAccount,
+  submitWithdrawal,
+  getBanks,
+  Bank,
+  withdrawalFeeAndTotal,
+  clampWithdrawalPayoutToBalance,
+  maxWithdrawalPayoutWithinBalance,
+} from '@/lib/withdrawal-service';
 import { demoWithdraw } from '@/lib/demo-withdrawal-service';
 import { getAppSettingsData } from '@/lib/app-settings-service';
 import InsufficientBalanceModal from '@/components/insufficient-balance-modal';
 import MinimumWithdrawLimitModal from '@/components/minimum-withdraw-limit-modal';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 export default function WithdrawScreen() {
   const { user } = useAuth();
+  /** When true, ignore withdrawal result (user dismissed confirm while request was in flight). */
+  const withdrawalCancelledRef = useRef(false);
+  /** Increments so stale verify responses never update UI after account/bank changes. */
+  const verifySessionRef = useRef(0);
+  /** Set after a successful verify; cleared when account or bank no longer matches. */
+  const lastVerifiedKeyRef = useRef<string | null>(null);
   const [amount, setAmount] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
   const [selectedBank, setSelectedBank] = useState('');
@@ -35,6 +50,7 @@ export default function WithdrawScreen() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showWrongAccountModal, setShowWrongAccountModal] = useState(false);
+  const [wrongAccountDetail, setWrongAccountDetail] = useState<string | null>(null);
   const [availableBalance, setAvailableBalance] = useState(0);
   const [balanceLoading, setBalanceLoading] = useState(true);
   const [verifyingAccount, setVerifyingAccount] = useState(false);
@@ -45,8 +61,18 @@ export default function WithdrawScreen() {
   const [bankSearchQuery, setBankSearchQuery] = useState('');
   const [proceedLoading, setProceedLoading] = useState(false);
   const [showInsufficientBalanceModal, setShowInsufficientBalanceModal] = useState(false);
+  const [insufficientRequiredAmount, setInsufficientRequiredAmount] = useState<string | undefined>(undefined);
   const [showMinimumLimitModal, setShowMinimumLimitModal] = useState(false);
   const [minWithdrawalAmount, setMinWithdrawalAmount] = useState(100);
+  /** Snapshot when opening confirm (fee-aware payout vs raw input). */
+  const [confirmRequested, setConfirmRequested] = useState(0);
+  const [confirmPayout, setConfirmPayout] = useState(0);
+  const [confirmFee, setConfirmFee] = useState(0);
+  const [confirmTotal, setConfirmTotal] = useState(0);
+  const [confirmAdjusted, setConfirmAdjusted] = useState(false);
+
+  const fmtNgn = (n: number) =>
+    `₦${n.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   // Fetch balance, banks, and app settings on mount
   useEffect(() => {
@@ -104,8 +130,10 @@ export default function WithdrawScreen() {
     setSelectedBankCode(bankCode);
     setShowBankPicker(false);
     setBankSearchQuery(''); // Clear search when bank is selected
-    // Clear account name when bank changes - will auto-verify if account number is 10 digits
+    lastVerifiedKeyRef.current = null;
     setAccountName('');
+    setShowWrongAccountModal(false);
+    setWrongAccountDetail(null);
   };
 
   // Filter banks based on search query
@@ -118,42 +146,96 @@ export default function WithdrawScreen() {
     );
   });
 
-  const handleVerifyAccount = async () => {
-    if (!accountNumber || accountNumber.length < 10) {
+  const verifyAccountFor = async (acct: string, bankCode: string) => {
+    if (acct.length !== 10 || !bankCode) {
       return;
     }
-    if (!selectedBank || !selectedBankCode) {
-      return;
-    }
+
+    const session = ++verifySessionRef.current;
 
     try {
       setVerifyingAccount(true);
-      const result = await verifyBankAccount(accountNumber, selectedBankCode);
-      
+      const result = await verifyBankAccount(acct, bankCode);
+
+      if (session !== verifySessionRef.current) {
+        return;
+      }
+      if (accountNumber !== acct || selectedBankCode !== bankCode) {
+        return;
+      }
+
       if (result.success && result.data) {
+        lastVerifiedKeyRef.current = `${acct}|${bankCode}`;
         setAccountName(result.data.account_name);
         setShowWrongAccountModal(false);
-      } else {
-        setAccountName('');
-        // Show wrong account modal if verification fails
-        if (result.error && !result.error.includes('must be')) {
-          setShowWrongAccountModal(true);
-        }
+        setWrongAccountDetail(null);
+        return;
       }
+
+      lastVerifiedKeyRef.current = null;
+      setAccountName('');
+      const err = (result.error || '').trim();
+      const errLower = err.toLowerCase();
+      if (errLower.includes('not authenticated')) {
+        Alert.alert('Session expired', 'Please sign in again to verify your account.');
+        return;
+      }
+      setWrongAccountDetail(
+        err && !errLower.includes('must be exactly 10 digits')
+          ? err
+          : 'This account could not be verified for the selected bank.',
+      );
+      setShowWrongAccountModal(true);
     } catch (error: any) {
       console.error('Error verifying account:', error);
+      if (session !== verifySessionRef.current) {
+        return;
+      }
+      if (accountNumber !== acct || selectedBankCode !== bankCode) {
+        return;
+      }
+      lastVerifiedKeyRef.current = null;
       setAccountName('');
+      setWrongAccountDetail(error?.message || 'Network error. Please check your connection and try again.');
       setShowWrongAccountModal(true);
     } finally {
-      setVerifyingAccount(false);
+      if (session === verifySessionRef.current) {
+        setVerifyingAccount(false);
+      }
     }
   };
 
-  // Auto-verify account when bank is selected and account number reaches 10 digits
+  // Clear resolved name when account or bank no longer matches last successful verify
   useEffect(() => {
-    if (accountNumber.length === 10 && selectedBank && selectedBankCode && !verifyingAccount && !accountName) {
-      handleVerifyAccount();
+    if (accountNumber.length < 10) {
+      lastVerifiedKeyRef.current = null;
+      setAccountName('');
+      setShowWrongAccountModal(false);
+      setWrongAccountDetail(null);
+      return;
     }
+    if (!selectedBankCode) {
+      lastVerifiedKeyRef.current = null;
+      setAccountName('');
+      return;
+    }
+    const key = `${accountNumber}|${selectedBankCode}`;
+    if (lastVerifiedKeyRef.current !== key) {
+      setAccountName('');
+    }
+  }, [accountNumber, selectedBankCode, selectedBank]);
+
+  // Debounced verify when 10 digits + bank (re-runs after any digit edit)
+  useEffect(() => {
+    if (accountNumber.length !== 10 || !selectedBank || !selectedBankCode) {
+      return;
+    }
+    const acct = accountNumber;
+    const bank = selectedBankCode;
+    const t = setTimeout(() => {
+      void verifyAccountFor(acct, bank);
+    }, 400);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountNumber, selectedBank, selectedBankCode]);
 
@@ -162,12 +244,26 @@ export default function WithdrawScreen() {
       Alert.alert('Error', 'Please enter a valid amount');
       return;
     }
-    const amt = parseFloat(amount);
-    if (amt < minWithdrawalAmount) {
+    const requested = parseFloat(amount);
+    if (requested < minWithdrawalAmount) {
       setShowMinimumLimitModal(true);
       return;
     }
-    if (amt > availableBalance) {
+    const maxAffordablePayout = maxWithdrawalPayoutWithinBalance(availableBalance);
+    if (maxAffordablePayout < minWithdrawalAmount) {
+      const minTotal = withdrawalFeeAndTotal(minWithdrawalAmount).total;
+      setInsufficientRequiredAmount(
+        minTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      );
+      setShowInsufficientBalanceModal(true);
+      return;
+    }
+    const payout = clampWithdrawalPayoutToBalance(requested, availableBalance);
+    if (payout < minWithdrawalAmount) {
+      const triedTotal = withdrawalFeeAndTotal(requested).total;
+      setInsufficientRequiredAmount(
+        triedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      );
       setShowInsufficientBalanceModal(true);
       return;
     }
@@ -184,22 +280,40 @@ export default function WithdrawScreen() {
       return;
     }
 
+    const { fee, total } = withdrawalFeeAndTotal(payout);
+    setConfirmRequested(requested);
+    setConfirmPayout(payout);
+    setConfirmFee(fee);
+    setConfirmTotal(total);
+    setConfirmAdjusted(Math.abs(payout - requested) > 0.009);
+
     setProceedLoading(true);
     await new Promise((r) => setTimeout(r, 300));
     setShowConfirmModal(true);
     setProceedLoading(false);
   };
 
+  /** Close confirm modal; if a withdrawal is submitting, mark it cancelled so completion is ignored. */
+  const handleCancelWithdrawConfirm = () => {
+    if (submittingWithdrawal) {
+      withdrawalCancelledRef.current = true;
+      setSubmittingWithdrawal(false);
+    }
+    setShowConfirmModal(false);
+  };
+
   const handleConfirmWithdraw = async () => {
     if (submittingWithdrawal) return; // Prevent double submission
-    
+    withdrawalCancelledRef.current = false;
+
     try {
       setSubmittingWithdrawal(true);
-      
-      const withdrawalAmount = parseFloat(amount);
-      
+
+      const payout = clampWithdrawalPayoutToBalance(confirmRequested, availableBalance);
+      const { fee: feeSnap, total: totalSnap } = withdrawalFeeAndTotal(payout);
+
       // Validate inputs before closing modal
-      if (!withdrawalAmount || withdrawalAmount <= 0) {
+      if (!payout || payout <= 0) {
         Alert.alert('Error', 'Please enter a valid amount');
         setSubmittingWithdrawal(false);
         return;
@@ -223,14 +337,17 @@ export default function WithdrawScreen() {
         return;
       }
       
-      if (withdrawalAmount < minWithdrawalAmount) {
+      if (payout < minWithdrawalAmount) {
         setShowConfirmModal(false);
         setShowMinimumLimitModal(true);
         setSubmittingWithdrawal(false);
         return;
       }
-      if (withdrawalAmount > availableBalance) {
+      if (totalSnap > availableBalance) {
         setShowConfirmModal(false);
+        setInsufficientRequiredAmount(
+          totalSnap.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        );
         setShowInsufficientBalanceModal(true);
         setSubmittingWithdrawal(false);
         return;
@@ -239,13 +356,27 @@ export default function WithdrawScreen() {
       // NOTE: keep the confirm modal open while the network call is in-flight
       // so the Confirm button can render its loading animation. We only close
       // it once we have a final result (success or specific error case).
+      console.log('💰 Submitting withdrawal request:', {
+        account_name: accountName,
+        account_number: accountNumber,
+        amount: payout,
+        fee: feeSnap,
+        total_debit: totalSnap,
+        bank_code: selectedBankCode,
+        bank_name: selectedBank,
+      });
+
       const result = await submitWithdrawal({
-        amount: withdrawalAmount,
+        amount: payout,
         bank_name: selectedBank,
         account_number: accountNumber,
         account_name: accountName,
         bank_code: selectedBankCode,
       });
+
+      if (withdrawalCancelledRef.current) {
+        return;
+      }
 
       if (result.success) {
         setShowConfirmModal(false);
@@ -265,6 +396,9 @@ export default function WithdrawScreen() {
         setShowConfirmModal(false);
         if (errLower.includes('insufficient')) {
           await fetchBalance();
+          setInsufficientRequiredAmount(
+            totalSnap.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          );
           setShowInsufficientBalanceModal(true);
         } else if (errLower.includes('minimum') || errLower.includes('below') || errLower.includes('limit')) {
           setShowMinimumLimitModal(true);
@@ -277,12 +411,22 @@ export default function WithdrawScreen() {
         }
       }
     } catch (error: any) {
+      if (withdrawalCancelledRef.current) {
+        return;
+      }
       console.error('Error processing withdrawal:', error);
       const errorMessage = error.message || error.toString() || 'Failed to process withdrawal. Please try again.';
       const errLower = errorMessage.toLowerCase();
       setShowConfirmModal(false);
       if (errLower.includes('insufficient')) {
-        fetchBalance().then(() => setShowInsufficientBalanceModal(true));
+        fetchBalance().then(() => {
+          const p = clampWithdrawalPayoutToBalance(confirmRequested, availableBalance);
+          const t = withdrawalFeeAndTotal(p).total;
+          setInsufficientRequiredAmount(
+            t.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          );
+          setShowInsufficientBalanceModal(true);
+        });
       } else if (errLower.includes('minimum') || errLower.includes('below') || errLower.includes('limit')) {
         setShowMinimumLimitModal(true);
       } else {
@@ -336,7 +480,7 @@ export default function WithdrawScreen() {
                 Available Balance
               </ThemedText>
               {balanceLoading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" style={{ marginTop: 8 }} />
+                <AppLoadingIndicator size="small" variant="onPrimary" style={{ marginTop: 8 }} />
               ) : (
                 <ThemedText 
                   style={styles.balanceAmount}
@@ -371,11 +515,17 @@ export default function WithdrawScreen() {
                   numberOfLines={1}
                 />
               </View>
-              {amount && parseFloat(amount) > availableBalance && (
-                <ThemedText style={styles.errorText}>
-                  Insufficient balance
-                </ThemedText>
-              )}
+              {amount &&
+                (() => {
+                  const a = parseFloat(amount);
+                  if (!Number.isFinite(a) || a <= 0) return null;
+                  const { total } = withdrawalFeeAndTotal(a);
+                  return total > availableBalance ? (
+                    <ThemedText style={styles.errorText}>
+                      Insufficient balance (amount + 3% fee exceeds available)
+                    </ThemedText>
+                  ) : null;
+                })()}
             </View>
 
             {/* Bank Selection */}
@@ -421,14 +571,16 @@ export default function WithdrawScreen() {
                   placeholder="Enter account number"
                   placeholderTextColor="#9CA3AF"
                   value={accountNumber}
-                  onChangeText={setAccountNumber}
+                  onChangeText={(text) =>
+                    setAccountNumber(text.replace(/\D/g, '').slice(0, 10))
+                  }
                   keyboardType="number-pad"
                   maxLength={10}
                   numberOfLines={1}
                 />
                 {verifyingAccount && (
                   <View style={styles.verifyingIndicator}>
-                    <ActivityIndicator size="small" color="#6B46C1" />
+                    <AppLoadingIndicator size="small" />
                   </View>
                 )}
                 {accountName && !verifyingAccount && (
@@ -468,8 +620,9 @@ export default function WithdrawScreen() {
             <TouchableOpacity
               style={[
                 styles.proceedButton,
-                (!amount || !accountNumber || !selectedBank || !accountName || proceedLoading) &&
+                (!amount || !accountNumber || !selectedBank || !accountName) &&
                   styles.proceedButtonDisabled,
+                proceedLoading && styles.proceedButtonLoading,
               ]}
               onPress={handleProceed}
               disabled={!amount || !accountNumber || !selectedBank || !accountName || proceedLoading}
@@ -477,9 +630,11 @@ export default function WithdrawScreen() {
             >
               <LinearGradient
                 colors={
-                  amount && accountNumber && selectedBank && accountName && !proceedLoading
-                    ? ['#6B46C1', '#9333EA']
-                    : ['#D1D5DB', '#9CA3AF']
+                  !amount || !accountNumber || !selectedBank || !accountName
+                    ? ['#D1D5DB', '#9CA3AF']
+                    : proceedLoading
+                      ? ['#7C3AED', '#6B46C1']
+                      : ['#6B46C1', '#9333EA']
                 }
                 style={styles.proceedButtonGradient}
                 start={{ x: 0, y: 0 }}
@@ -487,8 +642,15 @@ export default function WithdrawScreen() {
               >
                 {proceedLoading ? (
                   <View style={styles.proceedLoadingContainer}>
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                    <ThemedText style={styles.proceedButtonText}>Proceeding...</ThemedText>
+                    <AppLoadingIndicator variant="onPrimary" size="medium" />
+                    <ThemedText
+                      style={styles.proceedLoadingText}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >
+                      Proceeding...
+                    </ThemedText>
                   </View>
                 ) : (
                   <>
@@ -524,7 +686,21 @@ export default function WithdrawScreen() {
                   setShowMinimumLimitModal(true);
                   return;
                 }
-                if (amt > availableBalance) {
+                const maxAffordablePayout = maxWithdrawalPayoutWithinBalance(availableBalance);
+                if (maxAffordablePayout < minWithdrawalAmount) {
+                  const minTotal = withdrawalFeeAndTotal(minWithdrawalAmount).total;
+                  setInsufficientRequiredAmount(
+                    minTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  );
+                  setShowInsufficientBalanceModal(true);
+                  return;
+                }
+                const payout = clampWithdrawalPayoutToBalance(amt, availableBalance);
+                if (payout < minWithdrawalAmount) {
+                  const triedTotal = withdrawalFeeAndTotal(amt).total;
+                  setInsufficientRequiredAmount(
+                    triedTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                  );
                   setShowInsufficientBalanceModal(true);
                   return;
                 }
@@ -544,7 +720,7 @@ export default function WithdrawScreen() {
                 setSubmittingWithdrawal(true);
 
                 try {
-                  const withdrawalAmount = parseFloat(amount);
+                  const withdrawalAmount = payout;
                   const result = await demoWithdraw({
                     amount: withdrawalAmount,
                     bank_name: selectedBank,
@@ -654,7 +830,7 @@ export default function WithdrawScreen() {
             <ScrollView style={styles.bankList}>
               {banksLoading ? (
                 <View style={styles.bankListLoading}>
-                  <ActivityIndicator size="large" color="#6B46C1" />
+                  <AppLoadingIndicator size="large" />
                   <ThemedText style={styles.bankListLoadingText}>
                     Loading banks...
                   </ThemedText>
@@ -725,14 +901,11 @@ export default function WithdrawScreen() {
         visible={showConfirmModal}
         transparent
         animationType="fade"
-        onRequestClose={() => {
-          if (submittingWithdrawal) return;
-          setShowConfirmModal(false);
-        }}
+        onRequestClose={handleCancelWithdrawConfirm}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.confirmModalContent}>
-            <View style={styles.confirmIconContainer}>
+            <View style={[styles.confirmIconContainer, submittingWithdrawal && styles.confirmIconContainerProcessing]}>
               <MaterialIcons name="account-balance" size={64} color="#6B46C1" />
             </View>
             <ThemedText 
@@ -741,45 +914,72 @@ export default function WithdrawScreen() {
               adjustsFontSizeToFit
               minimumFontScale={0.8}
             >
-              Confirm Withdrawal
+              {submittingWithdrawal ? 'Processing withdrawal' : 'Confirm Withdrawal'}
             </ThemedText>
-            <View style={styles.confirmDetails}>
-              <View style={styles.confirmDetailRow}>
-                <ThemedText style={styles.confirmDetailLabel}>Amount:</ThemedText>
-                <ThemedText style={styles.confirmDetailValue}>
-                  ₦{parseFloat(amount).toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </ThemedText>
-              </View>
-              <View style={styles.confirmDetailRow}>
-                <ThemedText style={styles.confirmDetailLabel}>Bank:</ThemedText>
-                <ThemedText style={styles.confirmDetailValue}>{selectedBank}</ThemedText>
-              </View>
-              <View style={styles.confirmDetailRow}>
-                <ThemedText style={styles.confirmDetailLabel}>Account:</ThemedText>
-                <ThemedText style={styles.confirmDetailValue}>{accountNumber}</ThemedText>
-              </View>
-              <View style={styles.confirmDetailRow}>
-                <ThemedText style={styles.confirmDetailLabel}>Account Name:</ThemedText>
-                <ThemedText style={styles.confirmDetailValue}>{accountName}</ThemedText>
-              </View>
+            <View style={styles.confirmSummaryCard}>
+              {submittingWithdrawal ? (
+                <View style={styles.confirmProcessingInCard}>
+                  <AppLoadingIndicator size="large" variant="onLight" />
+                  <ThemedText style={styles.confirmProcessingCardTitle}>Processing…</ThemedText>
+                  <ThemedText style={styles.confirmProcessingCardSub}>
+                    Submitting your withdrawal. Please keep this screen open.
+                  </ThemedText>
+                </View>
+              ) : (
+                <View style={styles.confirmDetails}>
+                  {confirmAdjusted && (
+                    <ThemedText style={styles.confirmAdjustedNote} numberOfLines={4}>
+                      Your balance covers a lower bank payout after the 3% fee. Amount below is what you will receive; total is what leaves your wallet.
+                    </ThemedText>
+                  )}
+                  <View style={styles.confirmDetailRow}>
+                    <ThemedText style={styles.confirmDetailLabel}>You receive</ThemedText>
+                    <ThemedText style={styles.confirmDetailValue}>{fmtNgn(confirmPayout)}</ThemedText>
+                  </View>
+                  {confirmAdjusted && (
+                    <View style={styles.confirmDetailRow}>
+                      <ThemedText style={styles.confirmDetailLabel}>You entered</ThemedText>
+                      <ThemedText style={styles.confirmDetailValueMuted}>
+                        {fmtNgn(confirmRequested)}
+                      </ThemedText>
+                    </View>
+                  )}
+                  <View style={styles.confirmDetailRow}>
+                    <ThemedText style={styles.confirmDetailLabel}>Fee (3%)</ThemedText>
+                    <ThemedText style={styles.confirmDetailValueMuted}>{fmtNgn(confirmFee)}</ThemedText>
+                  </View>
+                  <View style={[styles.confirmDetailRow, styles.confirmTotalRow]}>
+                    <ThemedText style={styles.confirmDetailLabelStrong}>Total from wallet</ThemedText>
+                    <ThemedText style={styles.confirmDetailValueStrong}>{fmtNgn(confirmTotal)}</ThemedText>
+                  </View>
+                  <View style={styles.confirmDetailRow}>
+                    <ThemedText style={styles.confirmDetailLabel}>Bank:</ThemedText>
+                    <ThemedText style={styles.confirmDetailValue}>{selectedBank}</ThemedText>
+                  </View>
+                  <View style={styles.confirmDetailRow}>
+                    <ThemedText style={styles.confirmDetailLabel}>Account:</ThemedText>
+                    <ThemedText style={styles.confirmDetailValue}>{accountNumber}</ThemedText>
+                  </View>
+                  <View style={[styles.confirmDetailRow, styles.confirmDetailRowLast]}>
+                    <ThemedText style={styles.confirmDetailLabel}>Account Name:</ThemedText>
+                    <ThemedText style={styles.confirmDetailValue}>{accountName}</ThemedText>
+                  </View>
+                </View>
+              )}
             </View>
             <View style={styles.confirmModalActions}>
               <TouchableOpacity
                 style={[
                   styles.confirmCancelButton,
-                  submittingWithdrawal && styles.confirmCancelButtonDisabled,
+                  submittingWithdrawal && styles.confirmCancelButtonProcessing,
                 ]}
-                onPress={() => {
-                  if (submittingWithdrawal) return;
-                  setShowConfirmModal(false);
-                }}
-                activeOpacity={submittingWithdrawal ? 1 : 0.8}
-                disabled={submittingWithdrawal}
+                onPress={handleCancelWithdrawConfirm}
+                activeOpacity={0.8}
               >
                 <ThemedText 
                   style={[
                     styles.confirmCancelText,
-                    submittingWithdrawal && styles.confirmCancelTextDisabled,
+                    submittingWithdrawal && styles.confirmCancelTextProcessing,
                   ]}
                   numberOfLines={1}
                   adjustsFontSizeToFit
@@ -800,35 +1000,21 @@ export default function WithdrawScreen() {
                 <LinearGradient
                   colors={
                     submittingWithdrawal
-                      ? ['#9CA3AF', '#6B7280']
+                      ? ['#7C3AED', '#6B46C1']
                       : ['#6B46C1', '#9333EA']
                   }
                   style={styles.confirmProceedButtonGradient}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                 >
-                  {submittingWithdrawal ? (
-                    <View style={styles.confirmProceedLoadingContainer}>
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                      <ThemedText 
-                        style={styles.confirmProceedLoadingText}
-                        numberOfLines={1}
-                        adjustsFontSizeToFit
-                        minimumFontScale={0.8}
-                      >
-                        Processing...
-                      </ThemedText>
-                    </View>
-                  ) : (
-                    <ThemedText 
-                      style={styles.confirmProceedText}
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.8}
-                    >
-                      Confirm
-                    </ThemedText>
-                  )}
+                  <ThemedText 
+                    style={submittingWithdrawal ? styles.confirmProceedLoadingText : styles.confirmProceedText}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                  >
+                    {submittingWithdrawal ? 'Please wait' : 'Confirm'}
+                  </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
             </View>
@@ -841,7 +1027,10 @@ export default function WithdrawScreen() {
         visible={showWrongAccountModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowWrongAccountModal(false)}
+        onRequestClose={() => {
+          setShowWrongAccountModal(false);
+          setWrongAccountDetail(null);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.wrongAccountModalContent}>
@@ -850,23 +1039,28 @@ export default function WithdrawScreen() {
             </View>
             <ThemedText 
               style={styles.wrongAccountModalTitle}
-              numberOfLines={1}
+              numberOfLines={2}
               adjustsFontSizeToFit
               minimumFontScale={0.8}
             >
-              Invalid Account Number
+              Invalid account
             </ThemedText>
             <ThemedText 
               style={styles.wrongAccountModalMessage}
-              numberOfLines={4}
+              numberOfLines={8}
               adjustsFontSizeToFit
-              minimumFontScale={0.8}
+              minimumFontScale={0.85}
             >
-              The account number you entered could not be verified. Please check the account number and bank selection, then try again.
+              {wrongAccountDetail?.trim()
+                ? wrongAccountDetail.trim()
+                : 'The account number could not be verified for this bank. Check the number and bank, then try again.'}
             </ThemedText>
             <TouchableOpacity
               style={styles.wrongAccountModalButton}
-              onPress={() => setShowWrongAccountModal(false)}
+              onPress={() => {
+                setShowWrongAccountModal(false);
+                setWrongAccountDetail(null);
+              }}
               activeOpacity={0.8}
             >
               <LinearGradient
@@ -907,7 +1101,7 @@ export default function WithdrawScreen() {
               adjustsFontSizeToFit
               minimumFontScale={0.8}
             >
-              Withdrawal Successful!
+              Transfer successful!
             </ThemedText>
             <ThemedText 
               style={styles.successModalMessage}
@@ -915,7 +1109,7 @@ export default function WithdrawScreen() {
               adjustsFontSizeToFit
               minimumFontScale={0.8}
             >
-              Your withdrawal request has been submitted successfully. Funds will be transferred to your bank account instantly.
+              Your bank transfer was successful. Funds are on their way to your account.
             </ThemedText>
             <TouchableOpacity
               style={styles.successModalButton}
@@ -945,9 +1139,12 @@ export default function WithdrawScreen() {
       {/* Insufficient Balance Modal */}
       <InsufficientBalanceModal
         visible={showInsufficientBalanceModal}
-        onClose={() => setShowInsufficientBalanceModal(false)}
+        onClose={() => {
+          setShowInsufficientBalanceModal(false);
+          setInsufficientRequiredAmount(undefined);
+        }}
         availableBalance={availableBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        requiredAmount={amount}
+        requiredAmount={insufficientRequiredAmount ?? amount}
         currency="fiat"
       />
 
@@ -1157,18 +1354,27 @@ const styles = StyleSheet.create({
   proceedButtonDisabled: {
     opacity: 0.6,
   },
+  proceedButtonLoading: {
+    opacity: 0.8,
+  },
   proceedButtonGradient: {
     padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
+    minHeight: 52,
   },
   proceedLoadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
+  },
+  proceedLoadingText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#EDE9FE',
   },
   proceedButtonText: {
     fontSize: 18,
@@ -1367,17 +1573,49 @@ const styles = StyleSheet.create({
   confirmIconContainer: {
     marginBottom: 16,
   },
+  confirmIconContainerProcessing: {
+    opacity: 0.35,
+  },
   confirmModalTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    marginBottom: 24,
+    marginBottom: 20,
     textAlign: 'center',
     color: '#11181C',
   },
+  confirmSummaryCard: {
+    width: '100%',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    marginBottom: 24,
+    overflow: 'hidden',
+  },
+  confirmProcessingInCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 20,
+    gap: 14,
+  },
+  confirmProcessingCardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#5B21B6',
+    textAlign: 'center',
+  },
+  confirmProcessingCardSub: {
+    fontSize: 14,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
   confirmDetails: {
     width: '100%',
-    marginBottom: 24,
-    gap: 16,
+    paddingHorizontal: 4,
+    gap: 0,
   },
   confirmDetailRow: {
     flexDirection: 'row',
@@ -1396,16 +1634,50 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#11181C',
   },
+  confirmAdjustedNote: {
+    fontSize: 13,
+    color: '#047857',
+    lineHeight: 18,
+    marginBottom: 8,
+    paddingHorizontal: 2,
+  },
+  confirmDetailValueMuted: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#6B7280',
+  },
+  confirmDetailLabelStrong: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#11181C',
+  },
+  confirmDetailValueStrong: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#5B21B6',
+  },
+  confirmTotalRow: {
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+    marginTop: 4,
+    paddingTop: 14,
+  },
+  confirmDetailRowLast: {
+    borderBottomWidth: 0,
+  },
   confirmModalActions: {
     flexDirection: 'row',
     gap: 12,
     width: '100%',
+    alignItems: 'stretch',
   },
   confirmCancelButton: {
     flex: 1,
+    minHeight: 52,
+    justifyContent: 'center',
     backgroundColor: '#F9FAFB',
     borderRadius: 12,
-    padding: 16,
+    paddingHorizontal: 12,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E5E7EB',
@@ -1415,14 +1687,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#11181C',
   },
-  confirmCancelButtonDisabled: {
-    opacity: 0.5,
+  confirmCancelButtonProcessing: {
+    backgroundColor: '#F5F3FF',
+    borderColor: '#7C3AED',
+    borderWidth: 2,
   },
-  confirmCancelTextDisabled: {
-    color: '#9CA3AF',
+  confirmCancelTextProcessing: {
+    color: '#5B21B6',
+    fontWeight: '700',
   },
   confirmProceedButton: {
     flex: 1,
+    minHeight: 52,
     borderRadius: 12,
     overflow: 'hidden',
   },
@@ -1435,12 +1711,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 52,
   },
-  confirmProceedLoadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
   confirmProceedText: {
     fontSize: 16,
     fontWeight: 'bold',
@@ -1448,9 +1718,8 @@ const styles = StyleSheet.create({
   },
   confirmProceedLoadingText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginLeft: 8,
+    fontWeight: '700',
+    color: '#EDE9FE',
   },
   successModalContent: {
     backgroundColor: '#FFFFFF',

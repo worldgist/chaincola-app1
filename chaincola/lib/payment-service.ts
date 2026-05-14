@@ -1,6 +1,12 @@
 import Constants from 'expo-constants';
+import * as Linking from 'expo-linking';
 import { supabase } from './supabase';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '@/constants/supabase';
+
+/** Flutterwave `redirect_url` — must match `DeeplinkHandler` in `app/_layout.tsx` (`home` host). */
+export function getFlutterwaveWalletFundingRedirectUrl(): string {
+  return Linking.createURL('home', { queryParams: { payment: 'successful' } });
+}
 
 export interface InitializePaymentParams {
   amount: number;
@@ -108,7 +114,7 @@ export async function initializePayment(
       body: JSON.stringify({
         amount,
         currency,
-        redirect_url: redirectUrl || 'chaincola://home?payment=successful',
+        redirect_url: redirectUrl || getFlutterwaveWalletFundingRedirectUrl(),
         purpose: params.purpose || 'wallet-funding',
         metadata: params.metadata,
       }),

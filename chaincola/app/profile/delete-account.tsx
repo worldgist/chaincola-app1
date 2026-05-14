@@ -7,7 +7,6 @@ import {
   TextInput,
   Alert,
   Modal,
-  ActivityIndicator,
   RefreshControl,
   Platform,
 } from 'react-native';
@@ -29,6 +28,7 @@ import {
 } from '@/lib/account-deletion-service';
 import { getUserProfile, type UserProfile } from '@/lib/user-service';
 import { supabase } from '@/lib/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function DeleteAccountScreen() {
   const { user, signOut } = useAuth();
@@ -269,7 +269,7 @@ export default function DeleteAccountScreen() {
 
         {checkingRequest ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Checking deletion status...</ThemedText>
           </View>
         ) : error && !deletionRequest ? (
@@ -368,7 +368,7 @@ export default function DeleteAccountScreen() {
                 end={{ x: 1, y: 0 }}
               >
                 {loading ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="cancel" size={20} color="#FFFFFF" />
@@ -383,7 +383,7 @@ export default function DeleteAccountScreen() {
             <View style={styles.accountCard}>
               <ThemedText style={styles.accountCardTitle}>Your account</ThemedText>
               {summaryLoading ? (
-                <ActivityIndicator size="small" color="#6B46C1" style={{ marginVertical: 8 }} />
+                <AppLoadingIndicator size="small" style={{ marginVertical: 8 }} />
               ) : null}
               <View style={styles.accountRow}>
                 <ThemedText style={styles.accountLabel}>Name</ThemedText>
@@ -499,7 +499,7 @@ export default function DeleteAccountScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <>
                       <MaterialIcons name="delete-outline" size={20} color="#FFFFFF" />
@@ -555,7 +555,7 @@ export default function DeleteAccountScreen() {
                   end={{ x: 1, y: 0 }}
                 >
                   {loading ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <AppLoadingIndicator size="small" variant="onPrimary" />
                   ) : (
                     <ThemedText style={styles.modalDeleteText}>Yes, Delete Account</ThemedText>
                   )}
@@ -1059,5 +1059,4 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 });
-
 

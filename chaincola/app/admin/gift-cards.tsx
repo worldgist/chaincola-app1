@@ -4,7 +4,6 @@ import {
   View,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
   RefreshControl,
   Alert,
   TextInput,
@@ -26,6 +25,8 @@ import {
   type CreateCustomGiftCardParams 
 } from '@/lib/custom-gift-card-service';
 import { getAllGiftCards, cancelGiftCard as cancelPurchasedGiftCard } from '@/lib/gift-card-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 interface GiftCard {
   id: string;
@@ -370,7 +371,7 @@ export default function AdminGiftCardsScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading Gift Card Management...</ThemedText>
         </View>
       </ThemedView>
@@ -509,7 +510,7 @@ export default function AdminGiftCardsScreen() {
 
           {refreshing && (activeTab === 'purchased' ? giftCards.length === 0 : customGiftCards.length === 0) ? (
             <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#6B46C1" />
+              <AppLoadingIndicator size="large" />
             </View>
           ) : (activeTab === 'purchased' ? giftCards.length === 0 : customGiftCards.length === 0) ? (
             <View style={styles.emptyContainer}>
@@ -1052,7 +1053,7 @@ export default function AdminGiftCardsScreen() {
                 disabled={creating || !createForm.amount || createForm.amount <= 0}
               >
                 {creating ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="add-circle" size={20} color="#FFFFFF" />
@@ -1149,7 +1150,7 @@ export default function AdminGiftCardsScreen() {
                       disabled={reloading || !reloadAmount || parseFloat(reloadAmount) <= 0}
                     >
                       {reloading ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
+                        <AppLoadingIndicator size="small" variant="onPrimary" />
                       ) : (
                         <>
                           <MaterialIcons name="add-circle" size={20} color="#FFFFFF" />

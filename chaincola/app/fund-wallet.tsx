@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
@@ -17,9 +16,38 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { WebView } from 'react-native-webview';
 import { useAuth } from '@/contexts/AuthContext';
-import { initializePayment, pollPaymentStatus, VerifyPaymentResponse } from '@/lib/payment-service';
+import {
+  getFlutterwaveWalletFundingRedirectUrl,
+  initializePayment,
+  pollPaymentStatus,
+} from '@/lib/payment-service';
 import { getUserProfile } from '@/lib/user-service';
 import { demoAddMoney } from '@/lib/demo-payment-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
+const HOME_AFTER_FUNDING = '/(tabs)/index' as const;
+
+/** True when this URL is our post-checkout return (deeplink or https with tx_ref + status). */
+function isWalletFundingReturnUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  if (url.startsWith('chaincola://')) {
+    return (
+      url.includes('payment=') ||
+      url.includes('status=') ||
+      url.includes('tx_ref=') ||
+      url.includes('/home')
+    );
+  }
+  if (url.includes('payment-callback')) return true;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const q = `${u.search}&${u.hash.replace(/^#/, '')}`;
+    return /[?&]tx_ref=/.test(q) && /[?&](status|payment)=/i.test(q);
+  } catch {
+    return false;
+  }
+}
 
 export default function FundWalletScreen() {
   const { user } = useAuth();
@@ -94,7 +122,7 @@ export default function FundWalletScreen() {
       const result = await initializePayment({
         amount: totalPayment, // Charge total payment (deposit + fee)
         currency: currency,
-        redirectUrl: 'chaincola://home?payment=successful',
+        redirectUrl: getFlutterwaveWalletFundingRedirectUrl(),
         purpose: 'wallet-funding',
         metadata: {
           deposit_amount: depositAmount,
@@ -132,23 +160,25 @@ export default function FundWalletScreen() {
 
   const handleWebViewNavigationStateChange = async (navState: any) => {
     const { url } = navState;
-    
+
     console.log('🔍 WebView navigation:', url);
-    
-    // Check if payment was successful or redirected
-    // Flutterwave redirects to: chaincola://home?payment=successful&tx_ref=...
-    // Also handle old format: payment-callback?status=successful&tx_ref=...
-    if (url.includes('chaincola://') || url.includes('payment-callback') || url.includes('success') || url.includes('status') || url.includes('tx_ref') || url.includes('payment=')) {
-      // Extract URL parameters (handle both deeplink and web URL formats)
-      const urlToParse = url.includes('chaincola://') ? url.replace('chaincola://', 'https://') : url;
-      const urlParams = new URLSearchParams(urlToParse.split('?')[1] || '');
-      const status = urlParams.get('status') || urlParams.get('payment');
-      const txRefFromUrl = urlParams.get('tx_ref') || txRef;
 
-      console.log('🔍 Payment callback detected:', { url, status, txRef: txRefFromUrl });
+    if (!isWalletFundingReturnUrl(url)) {
+      return;
+    }
 
-      // Handle successful payment
-      if (status === 'successful' || url.includes('success')) {
+    // Extract URL parameters (handle both deeplink and web URL formats)
+    const urlToParse = url.includes('chaincola://') ? url.replace('chaincola://', 'https://') : url;
+    const queryPart = urlToParse.includes('?') ? urlToParse.split('?').slice(1).join('?') : '';
+    const urlParams = new URLSearchParams(queryPart.split('#')[0] || '');
+    const rawStatus = urlParams.get('status') || urlParams.get('payment');
+    const status = (rawStatus || '').toLowerCase();
+    const txRefFromUrl = urlParams.get('tx_ref') || txRef;
+
+    console.log('🔍 Payment callback detected:', { url, status, txRef: txRefFromUrl });
+
+    // Handle successful payment (Flutterwave uses status=successful)
+    if (status === 'successful' || status === 'success') {
         setShowWebView(false);
         setLoading(true);
 
@@ -168,8 +198,7 @@ export default function FundWalletScreen() {
               
               // Small delay to show success state
               setTimeout(() => {
-                // Navigate to home page (index)
-                router.replace('/(tabs)');
+                router.replace(HOME_AFTER_FUNDING);
               }, 500);
               
               // Show brief success message
@@ -182,8 +211,7 @@ export default function FundWalletScreen() {
                   {
                     text: 'OK',
                     onPress: () => {
-                      // Navigate to home page
-                      router.replace('/(tabs)');
+                      router.replace(HOME_AFTER_FUNDING);
                     },
                   },
                 ]
@@ -198,9 +226,9 @@ export default function FundWalletScreen() {
               // Payment may still be processing - redirect anyway and let webhook handle it
               console.log('⏳ Payment still processing, redirecting to home...');
               setTimeout(() => {
-                router.replace('/(tabs)');
+                router.replace(HOME_AFTER_FUNDING);
               }, 500);
-              
+
               Alert.alert(
                 'Payment Processing',
                 'Your payment is being processed. Your wallet will be credited shortly. You can check your transaction history.',
@@ -208,7 +236,7 @@ export default function FundWalletScreen() {
                   {
                     text: 'OK',
                     onPress: () => {
-                      router.replace('/(tabs)');
+                      router.replace(HOME_AFTER_FUNDING);
                     },
                   },
                 ]
@@ -217,12 +245,12 @@ export default function FundWalletScreen() {
           } catch (error: any) {
             console.error('❌ Error verifying payment:', error);
             setLoading(false);
-            
+
             // Even if verification fails, redirect to home (webhook will handle it)
             setTimeout(() => {
-              router.replace('/(tabs)');
+              router.replace(HOME_AFTER_FUNDING);
             }, 500);
-            
+
             Alert.alert(
               'Payment Processing',
               'Your payment is being processed. Your wallet will be credited shortly. You can check your transaction history.',
@@ -230,7 +258,7 @@ export default function FundWalletScreen() {
                 {
                   text: 'OK',
                   onPress: () => {
-                    router.replace('/(tabs)');
+                    router.replace(HOME_AFTER_FUNDING);
                   },
                 },
               ]
@@ -238,12 +266,12 @@ export default function FundWalletScreen() {
           }
         } else {
           setLoading(false);
-          
+
           // Redirect to home even without tx_ref (webhook will handle verification)
           setTimeout(() => {
-            router.replace('/(tabs)');
+            router.replace(HOME_AFTER_FUNDING);
           }, 500);
-          
+
           Alert.alert(
             'Payment Processing',
             'Your payment is being processed. Your wallet will be credited shortly. You can check your transaction history.',
@@ -251,21 +279,20 @@ export default function FundWalletScreen() {
               {
                 text: 'OK',
                 onPress: () => {
-                  router.replace('/(tabs)');
+                  router.replace(HOME_AFTER_FUNDING);
                 },
               },
             ]
           );
         }
-      } else if (status === 'cancelled' || url.includes('cancel')) {
-        setShowWebView(false);
-        setLoading(false);
-        Alert.alert('Payment Cancelled', 'Payment was cancelled. You can try again.');
-      } else if (status === 'failed' || url.includes('failed')) {
-        setShowWebView(false);
-        setLoading(false);
-        Alert.alert('Payment Failed', 'Payment was not successful. Please try again.');
-      }
+    } else if (status === 'cancelled' || status === 'cancel') {
+      setShowWebView(false);
+      setLoading(false);
+      Alert.alert('Payment Cancelled', 'Payment was cancelled. You can try again.');
+    } else if (status === 'failed') {
+      setShowWebView(false);
+      setLoading(false);
+      Alert.alert('Payment Failed', 'Payment was not successful. Please try again.');
     }
   };
 
@@ -324,7 +351,7 @@ export default function FundWalletScreen() {
         </View>
         {loading && (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Verifying payment...</ThemedText>
           </View>
         )}
@@ -334,39 +361,27 @@ export default function FundWalletScreen() {
           onShouldStartLoadWithRequest={(request) => {
             const requestUrl = request.url;
             console.log('🔍 WebView should start load:', requestUrl);
-            
-            // Intercept deeplink URLs (chaincola://)
+
             if (requestUrl.startsWith('chaincola://')) {
               console.log('🔗 Intercepted deeplink:', requestUrl);
-              // Handle the deeplink as a payment callback
               handleWebViewNavigationStateChange({ url: requestUrl });
-              // Don't let WebView navigate to deeplink
               return false;
             }
-            
-            // Check if this is a redirect URL (payment callback)
-            if (requestUrl.includes('payment-callback') || 
-                requestUrl.includes('success') || 
-                requestUrl.includes('status') ||
-                requestUrl.includes('tx_ref') ||
-                requestUrl.includes('payment=')) {
-              // This is a payment callback - handle it
+
+            if (isWalletFundingReturnUrl(requestUrl)) {
               handleWebViewNavigationStateChange({ url: requestUrl });
-              // Don't load the redirect URL in WebView, handle it in our code
               return false;
             }
-            
-            // Allow navigation to payment URLs
+
             if (requestUrl.startsWith('http') || requestUrl.startsWith('https')) {
               return true;
             }
-            
-            // Block invalid URLs
+
             if (requestUrl.startsWith('about:') || requestUrl === 'about:srcdoc') {
               console.warn('Blocked invalid URL:', requestUrl);
               return false;
             }
-            
+
             return true;
           }}
           style={styles.webView}
@@ -572,7 +587,7 @@ export default function FundWalletScreen() {
                 end={{ x: 1, y: 0 }}
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <MaterialIcons name="payment" size={20} color="#FFFFFF" />
                 )}

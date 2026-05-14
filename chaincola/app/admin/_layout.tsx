@@ -8,7 +8,6 @@ export default function AdminLayout() {
       }}
     >
       <Stack.Screen name="index" />
-      <Stack.Screen name="treasury" />
       <Stack.Screen name="zendit" />
       <Stack.Screen name="gift-cards" />
     </Stack>

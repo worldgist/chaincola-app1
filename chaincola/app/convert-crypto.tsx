@@ -9,7 +9,6 @@ import {
   Platform,
   Alert,
   Modal,
-  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,10 +16,12 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { swapCrypto, SwapCryptoRequest } from '@/lib/buy-sell-service';
+import { getSwapCryptoQuote, swapCrypto, SwapCryptoRequest } from '@/lib/buy-sell-service';
 import { getUserCryptoBalances } from '@/lib/crypto-price-service';
 import { getCryptoPrice } from '@/lib/crypto-price-service';
 import { supabase } from '@/lib/supabase';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 const cryptoData: Record<string, any> = {
   '1': {
@@ -100,6 +101,7 @@ export default function ConvertCryptoScreen() {
   const [fromSellPrice, setFromSellPrice] = useState(0);
   const [toBuyPrice, setToBuyPrice] = useState(0);
   const [swapResult, setSwapResult] = useState<any>(null);
+  const [quote, setQuote] = useState<any>(null);
 
   // Fetch user balances
   useEffect(() => {
@@ -138,6 +140,7 @@ export default function ConvertCryptoScreen() {
       if (!amount || !fromCrypto || !toCrypto) {
         setConvertedAmount('');
         setLoadingPrices(false);
+        setQuote(null);
         return;
       }
 
@@ -145,10 +148,12 @@ export default function ConvertCryptoScreen() {
       if (isNaN(amountValue) || amountValue <= 0) {
         setConvertedAmount('');
         setLoadingPrices(false);
+        setQuote(null);
         return;
       }
 
       setLoadingPrices(true);
+      setQuote(null);
       
       // Set a timeout to prevent infinite loading
       const timeoutId = setTimeout(() => {
@@ -241,22 +246,19 @@ export default function ConvertCryptoScreen() {
         setFromSellPrice(sellPrice);
         setToBuyPrice(buyPrice);
 
-        // Calculate: value_in_ngn = amount_A × sell_price_A
+        // Client-side estimate (fast UI). Final quote comes from backend when proceeding.
         const valueInNgn = amountValue * sellPrice;
-        
-        // Apply swap fee (0.5% default)
         const swapFee = valueInNgn * 0.005;
         const valueAfterFee = valueInNgn - swapFee;
-        
-        // Calculate: amount_B = value_in_ngn ÷ buy_price_B
         const converted = valueAfterFee / buyPrice;
-        
-        console.log(`✅ Conversion calculated: ${amountValue} ${fromCrypto.symbol} = ${converted.toFixed(8)} ${toCrypto.symbol}`);
+
+        console.log(`✅ Estimated conversion: ${amountValue} ${fromCrypto.symbol} ≈ ${converted.toFixed(8)} ${toCrypto.symbol}`);
         setConvertedAmount(converted.toFixed(8));
         clearTimeout(timeoutId);
       } catch (error: any) {
         console.error('❌ Error calculating conversion:', error);
         setConvertedAmount('');
+        setQuote(null);
         clearTimeout(timeoutId);
       } finally {
         setLoadingPrices(false);
@@ -301,7 +303,47 @@ export default function ConvertCryptoScreen() {
       return;
     }
 
-    setShowConfirmModal(true);
+    // Fetch a real quote from backend so preview matches execution.
+    (async () => {
+      setLoading(true);
+      try {
+        const amountValue = parseFloat(amount);
+        const swapRequest: SwapCryptoRequest = {
+          from_asset: fromCrypto.symbol,
+          to_asset: toCrypto.symbol,
+          from_amount: amountValue,
+        };
+
+        const q = await getSwapCryptoQuote(swapRequest);
+        if (!q.success) {
+          const msg = q.error || 'Unable to get a swap quote right now. Please try again.';
+          // Fallback: allow user to proceed with the on-screen estimate.
+          console.warn('⚠️ Swap quote failed; proceeding with estimate:', msg);
+          setQuote(null);
+          setShowConfirmModal(true);
+          return;
+        }
+
+        setQuote(q);
+        if (typeof q.to_amount === 'number' && !Number.isNaN(q.to_amount)) {
+          setConvertedAmount(q.to_amount.toFixed(8));
+        }
+        if (q.exchange_rate?.from_sell_price && q.exchange_rate?.to_buy_price) {
+          setFromSellPrice(q.exchange_rate.from_sell_price);
+          setToBuyPrice(q.exchange_rate.to_buy_price);
+        }
+
+        setShowConfirmModal(true);
+      } catch (e: any) {
+        // Fallback: allow user to proceed with the on-screen estimate.
+        const msg = e?.message || 'Failed to get swap quote.';
+        console.warn('⚠️ Exception getting swap quote; proceeding with estimate:', msg);
+        setQuote(null);
+        setShowConfirmModal(true);
+      } finally {
+        setLoading(false);
+      }
+    })();
   };
 
   const handleConfirmConvert = async () => {
@@ -329,6 +371,7 @@ export default function ConvertCryptoScreen() {
       if (result.success) {
         setSwapResult(result);
         setShowSuccessModal(true);
+        setQuote(null);
         
         // Refresh balances
         const { data: { user } } = await supabase.auth.getUser();
@@ -536,7 +579,7 @@ export default function ConvertCryptoScreen() {
                   numberOfLines={1}
                 />
                 {loadingPrices && (
-                  <ActivityIndicator size="small" color="#6B46C1" style={{ marginLeft: 8 }} />
+                  <AppLoadingIndicator size="small" style={{ marginLeft: 8 }} />
                 )}
               </View>
             </View>
@@ -589,7 +632,7 @@ export default function ConvertCryptoScreen() {
                 end={{ x: 1, y: 0 }}
               >
                 {loading ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <AppLoadingIndicator size="small" variant="onPrimary" />
                 ) : (
                   <>
                     <MaterialIcons name="swap-horiz" size={20} color="#FFFFFF" />

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, ActivityIndicator, Alert, Modal } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Switch, Alert, Modal } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
@@ -10,6 +10,7 @@ import {
   getUserNotificationPreferences,
   updateUserNotificationPreferences,
 } from '@/lib/notification-preferences-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 export default function NotificationSettingsScreen() {
   const { user } = useAuth();
@@ -148,7 +149,7 @@ export default function NotificationSettingsScreen() {
 
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Loading notification settings...</ThemedText>
           </View>
         ) : (
@@ -197,7 +198,7 @@ export default function NotificationSettingsScreen() {
 
             {saving && (
               <View style={styles.savingIndicator}>
-                <ActivityIndicator size="small" color="#6B46C1" />
+                <AppLoadingIndicator size="small" />
                 <ThemedText style={styles.savingText}>Saving preferences...</ThemedText>
               </View>
             )}
@@ -387,5 +388,4 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
-
 

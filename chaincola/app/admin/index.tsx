@@ -5,7 +5,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
-  ActivityIndicator,
 } from 'react-native';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
@@ -13,15 +12,10 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/lib/admin-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 const ADMIN_MENU_ITEMS = [
-  {
-    id: 'treasury',
-    title: 'Treasury Management',
-    icon: 'account-balance',
-    color: '#6B46C1',
-    route: '/admin/treasury',
-  },
   {
     id: 'transactions',
     title: 'All Transactions',
@@ -83,7 +77,7 @@ export default function AdminDashboardScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading Admin Dashboard...</ThemedText>
         </View>
       </ThemedView>
@@ -126,20 +120,6 @@ export default function AdminDashboardScreen() {
                 <MaterialIcons name="dashboard" size={24} color="#6B46C1" />
               </View>
               <ThemedText style={[styles.sidebarItemText, styles.sidebarItemTextActive]}>Dashboard</ThemedText>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.sidebarItem}
-              onPress={() => {
-                handleMenuPress('/admin/treasury');
-                setSidebarOpen(false);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.sidebarIconContainer, { backgroundColor: '#6B46C120' }]}>
-                <MaterialIcons name="account-balance" size={24} color="#6B46C1" />
-              </View>
-              <ThemedText style={styles.sidebarItemText}>Treasury Management</ThemedText>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -214,19 +194,6 @@ export default function AdminDashboardScreen() {
               {ADMIN_MENU_ITEMS.length} menu items available
             </ThemedText>
             <View style={styles.actionsGrid}>
-              <TouchableOpacity
-                style={styles.actionCard}
-                onPress={() => {
-                  console.log('Treasury Management pressed');
-                  handleMenuPress('/admin/treasury');
-                }}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.actionIconContainer, { backgroundColor: '#6B46C120' }]}>
-                  <MaterialIcons name="account-balance" size={32} color="#6B46C1" />
-                </View>
-                <ThemedText style={styles.actionCardTitle}>Treasury Management</ThemedText>
-              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.actionCard}
                 onPress={() => {

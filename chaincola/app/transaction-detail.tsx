@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Share, Alert, Platform, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Share, Alert, Platform } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -14,6 +14,8 @@ import { Asset } from 'expo-asset';
 import { useAuth } from '@/contexts/AuthContext';
 import { getTransactionById, Transaction, formatRelativeTime } from '@/lib/transaction-service';
 import { getCryptoPrice } from '@/lib/crypto-price-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 // Helper function to get crypto logo
 function getCryptoLogo(symbol: string): any {
@@ -281,7 +283,7 @@ export default function TransactionDetailScreen() {
 
     const fetchCryptoPrices = async (symbol: string, cryptoAmount: string) => {
       try {
-        const { price, error: priceError } = await getCryptoPrice(symbol);
+        const { price, error: priceError } = await getCryptoPrice(symbol, { retailOverlay: false });
         if (!priceError && price) {
           if (price.price_ngn) {
             setCryptoPriceNGN(price.price_ngn);
@@ -316,7 +318,7 @@ export default function TransactionDetailScreen() {
     return (
       <ThemedView style={styles.container}>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6B46C1" />
+          <AppLoadingIndicator size="large" />
           <ThemedText style={styles.loadingText}>Loading transaction...</ThemedText>
         </View>
       </ThemedView>

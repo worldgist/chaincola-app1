@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, TextInput, ActivityIndicator, Modal, Image } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, TextInput, Modal, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router } from 'expo-router';
@@ -7,6 +7,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { purchaseData } from '@/lib/utility-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 interface DataPlan {
   planId: string;
@@ -217,7 +219,7 @@ export default function BuyDataScreen() {
             style={styles.purchaseButtonGradient}
           >
             {processing ? (
-              <ActivityIndicator color="#FFFFFF" />
+              <AppLoadingIndicator size="small" variant="onPrimary" />
             ) : (
               <>
                 <MaterialIcons name="shopping-cart" size={20} color="#FFFFFF" />

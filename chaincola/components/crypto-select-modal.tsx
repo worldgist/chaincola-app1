@@ -5,7 +5,6 @@ import {
   Modal,
   TouchableOpacity,
   ScrollView,
-  ActivityIndicator,
   Pressable,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -13,6 +12,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserCryptoBalances, formatCryptoBalance, formatUsdValue, formatNgnValue, getLunoPrices } from '@/lib/crypto-price-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 
 interface CryptoAsset {
   id: string;
@@ -73,7 +73,7 @@ export default function CryptoSelectModal({
       // For now, show all assets (they'll be filtered when real balances load)
       
       // Fetch prices immediately (don't wait for user data)
-      getLunoPrices(filteredConfig.map(c => c.symbol))
+      getLunoPrices(filteredConfig.map((c) => c.symbol), { retailOverlay: false })
         .then((pricesResult) => {
           if (pricesResult && pricesResult.prices) {
             const updatedAssets = defaultAssets.map((asset) => {
@@ -142,7 +142,7 @@ export default function CryptoSelectModal({
       // Fetch balances and prices in parallel
       const [balancesResult, pricesResult] = await Promise.all([
         getUserCryptoBalances(user.id),
-        getLunoPrices(filteredConfig.map(c => c.symbol)),
+        getLunoPrices(filteredConfig.map(c => c.symbol), { retailOverlay: false }),
       ]);
 
       console.log('💼 Balances result:', balancesResult);
@@ -257,14 +257,18 @@ export default function CryptoSelectModal({
                 style={styles.closeButton}
                 activeOpacity={0.7}
               >
-                <MaterialIcons name="close" size={24} color="#6B7280" />
+                <MaterialIcons
+                  name={action === 'receive' ? 'arrow-back' : 'close'}
+                  size={24}
+                  color="#6B7280"
+                />
               </TouchableOpacity>
             </View>
 
             {/* Content */}
             {loading ? (
               <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#6B46C1" />
+                <AppLoadingIndicator size="large" />
                 <ThemedText style={styles.loadingText}>Loading cryptocurrencies...</ThemedText>
               </View>
             ) : cryptoAssets.length === 0 ? (
@@ -313,7 +317,7 @@ export default function CryptoSelectModal({
                       <ThemedText style={styles.cryptoBalance}>{asset.balance}</ThemedText>
                       {asset.pricePerUnitNGN && asset.pricePerUnitNGN !== 'Loading...' && asset.pricePerUnitNGN !== 'N/A' ? (
                         <ThemedText style={styles.cryptoPriceNgn} numberOfLines={1}>
-                          {asset.pricePerUnitNGN}/unit
+                          {asset.pricePerUnitNGN}
                         </ThemedText>
                       ) : asset.pricePerUnitNGN === 'Loading...' ? (
                         <ThemedText style={styles.cryptoPriceLoading}>…</ThemedText>

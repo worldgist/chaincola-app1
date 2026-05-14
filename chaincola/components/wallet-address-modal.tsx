@@ -5,7 +5,6 @@ import {
   Modal,
   TouchableOpacity,
   ScrollView,
-  ActivityIndicator,
   Alert,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -16,6 +15,9 @@ import { ThemedView } from '@/components/themed-view';
 import QRCode from 'react-native-qrcode-svg';
 import { getDemoWallet, getAllDemoWallets } from '@/lib/demo-wallets';
 import { useAuth } from '@/contexts/AuthContext';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+import { getWalletAddress, getWalletByAsset } from '@/lib/crypto-wallet-service';
+
 
 interface WalletAddressModalProps {
   visible: boolean;
@@ -60,7 +62,6 @@ export default function WalletAddressModal({
   const fetchWalletAddress = async () => {
     try {
       setLoading(true);
-      const { getWalletAddress } = await import('@/lib/crypto-wallet-service');
       const { address, error } = await getWalletAddress(asset as any, 'mainnet');
       
       if (address && !error) {
@@ -68,7 +69,6 @@ export default function WalletAddressModal({
         
         // Get destination tag for XRP if available
         if (asset === 'XRP') {
-          const { getWalletByAsset } = await import('@/lib/crypto-wallet-service');
           const { wallet } = await getWalletByAsset('XRP', 'mainnet');
           if (wallet?.destination_tag) {
             setDestinationTag(wallet.destination_tag);
@@ -138,7 +138,7 @@ export default function WalletAddressModal({
               onPress={onClose}
               activeOpacity={0.7}
             >
-              <MaterialIcons name="close" size={24} color="#11181C" />
+              <MaterialIcons name="arrow-back" size={24} color="#11181C" />
             </TouchableOpacity>
             <ThemedText style={styles.headerTitle}>Receive {asset}</ThemedText>
             <View style={styles.placeholder} />
@@ -174,7 +174,7 @@ export default function WalletAddressModal({
             {loading ? (
               <View style={styles.qrSection}>
                 <View style={styles.qrContainer}>
-                  <ActivityIndicator size="large" color="#6B46C1" />
+                  <AppLoadingIndicator size="large" />
                   <ThemedText style={styles.loadingText}>Generating address...</ThemedText>
                 </View>
               </View>
@@ -259,26 +259,6 @@ export default function WalletAddressModal({
                   </View>
                 )}
 
-                {/* Action Buttons */}
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity
-                    style={styles.actionButton}
-                    onPress={handleCopyAddress}
-                    activeOpacity={0.8}
-                  >
-                    <MaterialIcons name="content-copy" size={20} color="#6B46C1" />
-                    <ThemedText style={styles.actionButtonText}>Copy Address</ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.actionButton}
-                    onPress={handleShare}
-                    activeOpacity={0.8}
-                  >
-                    <MaterialIcons name="share" size={20} color="#6B46C1" />
-                    <ThemedText style={styles.actionButtonText}>Share</ThemedText>
-                  </TouchableOpacity>
-                </View>
-
                 {/* Demo Address Section - Only visible for demo users */}
                 {user?.email?.toLowerCase() === 'demo@chaincola.com' && (
                   <View style={styles.demoSection}>
@@ -348,6 +328,31 @@ export default function WalletAddressModal({
               </View>
             </View>
           </ScrollView>
+
+          {/* Bottom action bar (always visible when address is ready) */}
+          {walletAddress && !loading && (
+            <View style={styles.bottomActionBar}>
+              <TouchableOpacity
+                style={[styles.bottomActionButton, styles.bottomActionPrimary]}
+                onPress={handleCopyAddress}
+                activeOpacity={0.85}
+              >
+                <MaterialIcons name="content-copy" size={20} color="#FFFFFF" />
+                <ThemedText style={[styles.bottomActionText, styles.bottomActionTextPrimary]}>
+                  Copy
+                </ThemedText>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.bottomActionButton, styles.bottomActionSecondary]}
+                onPress={handleShare}
+                activeOpacity={0.85}
+              >
+                <MaterialIcons name="share" size={20} color="#6B46C1" />
+                <ThemedText style={styles.bottomActionText}>Share</ThemedText>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       </ThemedView>
     </Modal>
@@ -403,6 +408,41 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 20,
     paddingBottom: 40,
+  },
+  bottomActionBar: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    backgroundColor: '#FFFFFF',
+  },
+  bottomActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    borderRadius: 14,
+  },
+  bottomActionPrimary: {
+    backgroundColor: '#6B46C1',
+  },
+  bottomActionSecondary: {
+    backgroundColor: '#F3E8FF',
+    borderWidth: 1,
+    borderColor: '#E9D5FF',
+  },
+  bottomActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#6B46C1',
+  },
+  bottomActionTextPrimary: {
+    color: '#FFFFFF',
   },
   cryptoCard: {
     flexDirection: 'row',

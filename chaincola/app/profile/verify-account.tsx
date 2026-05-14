@@ -9,7 +9,6 @@ import {
   Platform,
   Modal,
   Alert,
-  ActivityIndicator,
   Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -22,6 +21,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { submitVerification, getUserVerificationStatus, verifyBVNOrNIN, type VerificationStatus } from '@/lib/verification-service';
 import { useFocusEffect } from 'expo-router';
 import { createDemoVerification } from '@/lib/demo-verification-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
+
 
 type VerificationStep = 1 | 2 | 3 | 4 | 5;
 
@@ -854,7 +855,7 @@ export default function VerifyAccountScreen() {
                 >
                   {currentStep === 3 && verificationMethod === 'bvn' ? (
                     bvnVerifying ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <AppLoadingIndicator size="small" variant="onPrimary" />
                     ) : (
                       <ThemedText style={styles.nextButtonText}>Verify with BVN</ThemedText>
                     )
@@ -878,7 +879,7 @@ export default function VerifyAccountScreen() {
                     end={{ x: 1, y: 0 }}
                   >
                     {processing ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <AppLoadingIndicator size="small" variant="onPrimary" />
                     ) : (
                       <ThemedText style={styles.verifyButtonText}>Verify</ThemedText>
                     )}

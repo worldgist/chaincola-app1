@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { StyleSheet, View, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Share, RefreshControl } from 'react-native';
+import { StyleSheet, View, ScrollView, TouchableOpacity, Alert, Share, RefreshControl } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { router, useFocusEffect } from 'expo-router';
@@ -13,6 +13,7 @@ import {
   getReferralStats,
   getRecentReferrals,
 } from '@/lib/referral-service';
+import AppLoadingIndicator from '@/components/app-loading-indicator';
 // Supabase removed
 
 export default function ReferralScreen() {
@@ -254,7 +255,7 @@ export default function ReferralScreen() {
 
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#6B46C1" />
+            <AppLoadingIndicator size="large" />
             <ThemedText style={styles.loadingText}>Loading referral data...</ThemedText>
           </View>
         ) : (
@@ -314,7 +315,7 @@ export default function ReferralScreen() {
                         disabled={loading}
                       >
                         {loading ? (
-                          <ActivityIndicator size="small" color="#FFFFFF" />
+                          <AppLoadingIndicator size="small" variant="onPrimary" />
                         ) : (
                           <ThemedText style={styles.retryButtonText}>Generate Code</ThemedText>
                         )}
